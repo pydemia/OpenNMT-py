@@ -74,7 +74,8 @@ parser.add_argument('-attention_type', type=str, default='general',
                     choices=['dot', 'general', 'mlp'],
                     help="""The attention type to use:
                     dotprot or general (Luong) or MLP (Bahdanau)""")
-
+parser.add_argument('-reinforced', action="store_true", 
+                    help="""WIP Use Reinforced model of Paulus 2017""")
 # Optimization options
 parser.add_argument('-encoder_type', default='text',
                     help="Type of encoder to use. Options are [text|img].")
@@ -357,18 +358,28 @@ def main():
     print(' * maximum batch size. %d' % opt.batch_size)
 
     print('Building model...')
-
-    if opt.encoder_type == "text":
+    
+    if opt.reinforced:
+        opt.layers = 2
+        opt.rnn_size = 200
         encoder = onmt.Models.Encoder(opt, dicts['src'],
                                       dicts.get('src_features', None))
-    elif opt.encoder_type == "img":
-        encoder = onmt.modules.ImageEncoder(opt)
-        assert("type" not in dataset or dataset["type"] == "img")
+        decoder = onmt.modules.ReinforcedDecoder(opt, encoder.embeddings)
+        model = onmt.modules.ReinforcedModel(encoder, decoder)
+
     else:
-        print("Unsupported encoder type %s" % (opt.encoder_type))
+        if opt.encoder_type == "text":
+            encoder = onmt.Models.Encoder(opt, dicts['src'],
+                                          dicts.get('src_features', None))
+        elif opt.encoder_type == "img":
+            encoder = onmt.modules.ImageEncoder(opt)
+            assert("type" not in dataset or dataset["type"] == "img")
+        else:
+            print("Unsupported encoder type %s" % (opt.encoder_type))
 
-    decoder = onmt.Models.Decoder(opt, dicts['tgt'])
-
+        decoder = onmt.Models.Decoder(opt, dicts['tgt'])
+        model = onmt.Models.NMTModel(encoder, decoder, len(opt.gpus) > 1)
+    
     if opt.copy_attn:
         generator = onmt.modules.CopyGenerator(opt, dicts['src'], dicts['tgt'])
     else:
@@ -378,7 +389,6 @@ def main():
         if opt.share_decoder_embeddings:
             generator[0].weight = decoder.embeddings.word_lut.weight
 
-    model = onmt.Models.NMTModel(encoder, decoder, len(opt.gpus) > 1)
 
     if opt.train_from:
         print('Loading model from checkpoint at %s' % opt.train_from)
