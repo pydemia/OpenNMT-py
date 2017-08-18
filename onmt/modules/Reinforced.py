@@ -81,7 +81,8 @@ class IntraAttention(_Module):
 
         E_t = (h_t @ self.W_attn).unsqueeze(2).transpose(1, 2).bmm(h).squeeze(1)
 
-        EE_t = E_t
+        #TODO local attention
+        EE_t = E_t.exp()
         #print(n)
         #print(EE_t.size())
         # sum(EE_t).usqueeze = [b x 1]
@@ -209,12 +210,11 @@ class PointerGenerator(_Module):
         self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
         
 
-    def forward(self, x, ae_t, ce_t, hd_t, cd_t):
+    def forward(self, ae_t, ce_t, hd_t, cd_t):
         """
         Implementing sect. 2.3: "Token generation and pointer"
         (and sect. 2.4 about weights sharing)
         Args:
-            x: [src x bs x 1]
             ae_t: [b x src]
             ce_t: [b x dim]
             hd_t: [b x dim]
@@ -237,7 +237,7 @@ class PointerGenerator(_Module):
             p_copy: [bs x src_len]
         """
         dim = self.dim
-        src_len, bs, _ = list(x.size())
+        bs,src_len = list(ae_t.size())
         assert_size(ae_t, [bs, src_len])
         assert_size(ce_t, [bs,dim])
         assert_size(hd_t, [bs,dim])
@@ -253,7 +253,6 @@ class PointerGenerator(_Module):
        
         self.W_out = self.tanh(self.W_emb @ self.W_proj)
         self.proj_out = lambda V: self.W_out @ V + self.b_out
-
 
         p_gen = ((1-p_switch) * self.softmax(self.proj_out(c_cat))).t()
         p_copy = (p_switch * ae_t.t()).t() # t() needed for broadcasting
@@ -369,8 +368,8 @@ class ReinforcedDecoder(_Module):
         tgt = batch.tgt                # [tgt_len x bs]
         lengths = batch.lengths         # [1 x bs]
         align = batch.alignment
-        print(align.size())
-        print(tgt.size()) 
+        #print(align.size())
+        #print(tgt.size()) 
         inputs = tgt[:-1]
     
         crit = onmt.modules.CopyCriterion
@@ -383,7 +382,7 @@ class ReinforcedDecoder(_Module):
         assert_size(h_e, [src_len, bs, dim])
         
         emb = self.embeddings(inputs.unsqueeze(2))
-        print(emb.size())
+        #print(emb.size())
         #print("DECODER EMBEDDED")
         hd_history = None #[]
         outputs, copies = [], []
@@ -391,6 +390,7 @@ class ReinforcedDecoder(_Module):
         # chose one
         #loss = []
         loss = None
+        tot_loss = 0
         #losses = []
         def _copy(var):
             return torch.autograd.Variable(var.data, requires_grad=True)
@@ -421,18 +421,19 @@ class ReinforcedDecoder(_Module):
                 alpha_d, cd_t = self.dec_attn(_copy(hd_t), _copy(hd_history))
                 #alpha_d, cd_t = self.dec_attn(hd_t, hd_history)
             
-            p_gen, p_copy = self.pointer_generator(_copy(src), alpha_e, c_e, _copy(hd_t), cd_t)
+            p_gen, p_copy = self.pointer_generator(alpha_e, c_e, _copy(hd_t), cd_t)
             l = crit(p_gen, p_copy, tgt[t, :].unsqueeze(1), align[t, :, :].squeeze(0))
             l = l.div(batch.batchSize)
-            
+            loss = l.data[0]
             #l.backward(retain_graph=True)
-            print("going to bw (%d)" % t)
+            #print("going to bw (%d)" % t)
             l.backward()
-            print("backwarded (%d)" % t) 
+            #print("backwarded (%d)" % t) 
             
             #loss += [l]
              
-            #loss = l if loss is None else loss + l
+            
+            tot_loss += loss 
             
             #print("pause %d" % t)
             #input()
@@ -444,7 +445,8 @@ class ReinforcedDecoder(_Module):
         # (tgt_len, bs, n_emb)
         #print("DECODER OUT")
         #torch.stack(outputs), torch.stack(copies)
-        return None, None, hidden, loss#torch.stack(losses, dim=0)
+        tot_loss = tot_loss / tgt_len
+        return None, None, hidden, tot_loss#torch.stack(losses, dim=0)
 
 class ReinforcedModel(nn.Module):
     def __init__(self, encoder, decoder, multigpu=False):

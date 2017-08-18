@@ -233,7 +233,8 @@ def trainModel(model, trainData, validData, dataset, optim):
 
         total_stats = onmt.Loss.Statistics()
         report_stats = onmt.Loss.Statistics()
-
+        
+        ep_loss = 0
         for i in range(len(trainData)):
             batchIdx = batchOrder[i] if epoch > opt.curriculum else i
             batch = trainData[batchIdx]
@@ -243,26 +244,29 @@ def trainModel(model, trainData, validData, dataset, optim):
             trunc_size = opt.truncated_decoder if opt.truncated_decoder \
                 else target_size
 
+            
             for j in range(0, target_size-1, trunc_size):
+                tot_loss = 0
                 trunc_batch = batch.truncate(j, j + trunc_size)
 
                 # Main training loop
                 model.zero_grad()
-                print("TRAIN MODEL IT")
+                #print("TRAIN MODEL IT")
                 #TODO unify call, passing batch instead of shity src, tgt, lenghts etc
                 #
-                print("batch src: %s" % str(trunc_batch.src.size()))
-                print("batch tgt: %s" % str(trunc_batch.tgt.size()))
+                #print("batch src: %s" % str(trunc_batch.src.size()))
+                #print("batch tgt: %s" % str(trunc_batch.tgt.size()))
                 outputs, attn, dec_state, loss = model(trunc_batch,
                                                  dec_state)
                 
-                
-                print("TRAIN COMPUTE LOSS")
+                tot_loss += loss                
+                                    
+                #print("TRAIN COMPUTE LOSS")
                 #batch_stats, inputs, grads \
                 #    = mem_loss.loss(trunc_batch, outputs, attn, loss=loss)
                 #exit() 
                 
-                print("TRAIN BACKWARD")
+                #print("TRAIN BACKWARD")
                 #torch.autograd.backward(inputs, grads, retain_variables=True)
                 #exit()
                 
@@ -281,18 +285,23 @@ def trainModel(model, trainData, validData, dataset, optim):
                 #report_stats.update(batch_stats)
                 if dec_state is not None:
                     dec_state.detach()
-                
-                print("Everything done")
-                exit()
+            batch_loss = tot_loss / (j+1)
+            ep_loss += batch_loss
+            n_iter = len(trainData)
+            epoch_percent = 100 * (float(i+1) / n_iter)
+            print("Batch [%d/%d]\t(%.1f%%)\tloss: %.3f" % (i, n_iter, epoch_percent, batch_loss))
+
+                #print("Everything done")
             report_stats.n_src_words += batch.lengths.data.sum()
 
-            if i % opt.log_interval == -1 % opt.log_interval:
+            if False and i % opt.log_interval == -1 % opt.log_interval:
                 report_stats.output(epoch, i+1, len(trainData),
                                     total_stats.start_time)
                 if opt.log_server:
                     report_stats.log("progress", experiment, optim)
                 report_stats = onmt.Loss.Statistics()
 
+        print("\nEp loss: %f" % (ep_loss/(i+1)))
         return total_stats
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):

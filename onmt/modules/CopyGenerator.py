@@ -82,10 +82,26 @@ def CopyCriterion(probs, attn, targ, align, eps=1e-12):
     copies = copies.add(eps)
     # Can't use UNK, must copy.
     # probs: (tgt_len*b) x vocab
-    # 
+    #
+    
+    #print(probs)
+    #print(targ)
+    #print("print attn then align")
+    #print(attn)
+    #print(align)
+    #print("print copies")
+    #print(copies)
     out = probs.gather(1, targ.view(-1, 1))
+    #print("print after gather")
+    #print(out)
     out = out.view(-1)
+    #print("after view")
+    #print(out)
     out = out + copies + eps
+    #print("print after sum")
+    #print(out)
     out = torch.log(out)
+    #print("out after log")
+    #print(out)
     out = out.mul(targ.ne(onmt.Constants.PAD).float())
     return -out.sum()
