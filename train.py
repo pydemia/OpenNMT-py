@@ -215,7 +215,7 @@ def trainModel(model, trainData, validData, dataset, optim):
     assert os.path.isdir(model_dirname), "%s not a directory" % opt.save_model
 
     # Define criterion of each GPU.
-    if not opt.copy_attn:
+    if not (opt.copy_attn or opt.reinforced):
         criterion = onmt.Loss.NMTCriterion(dataset['dicts']['tgt'].size(), opt)
     else:
         criterion = onmt.modules.CopyCriterion
@@ -248,22 +248,42 @@ def trainModel(model, trainData, validData, dataset, optim):
 
                 # Main training loop
                 model.zero_grad()
-                outputs, attn, dec_state = model(trunc_batch.src,
-                                                 trunc_batch.tgt,
-                                                 trunc_batch.lengths,
+                print("TRAIN MODEL IT")
+                #TODO unify call, passing batch instead of shity src, tgt, lenghts etc
+                #
+                print("batch src: %s" % str(trunc_batch.src.size()))
+                print("batch tgt: %s" % str(trunc_batch.tgt.size()))
+                outputs, attn, dec_state, loss = model(trunc_batch,
                                                  dec_state)
-                batch_stats, inputs, grads \
-                    = mem_loss.loss(trunc_batch, outputs, attn)
-
-                torch.autograd.backward(inputs, grads)
-
+                
+                
+                print("TRAIN COMPUTE LOSS")
+                #batch_stats, inputs, grads \
+                #    = mem_loss.loss(trunc_batch, outputs, attn, loss=loss)
+                #exit() 
+                
+                print("TRAIN BACKWARD")
+                #torch.autograd.backward(inputs, grads, retain_variables=True)
+                #exit()
+                
+                #for l in loss:
+                #    l.backward(retain_variables=True)
+                #loss.backward()
+                
+                #print("TRAIN STEP/UPDATE")
                 # Update the parameters.
                 optim.step()
-                total_stats.update(batch_stats)
-                report_stats.update(batch_stats)
+                #print("TRAIN STEP DONE")
+                #exit() 
+               
+                #print("TRAIN UPDATE")
+                #total_stats.update(batch_stats)
+                #report_stats.update(batch_stats)
                 if dec_state is not None:
                     dec_state.detach()
-
+                
+                print("Everything done")
+                exit()
             report_stats.n_src_words += batch.lengths.data.sum()
 
             if i % opt.log_interval == -1 % opt.log_interval:
@@ -360,8 +380,8 @@ def main():
     print('Building model...')
     
     if opt.reinforced:
-        opt.layers = 2
-        opt.rnn_size = 200
+        #opt.layers = 2
+        #opt.rnn_size = 200
         encoder = onmt.Models.Encoder(opt, dicts['src'],
                                       dicts.get('src_features', None))
         decoder = onmt.modules.ReinforcedDecoder(opt, encoder.embeddings)
@@ -407,6 +427,14 @@ def main():
         generator.load_state_dict(checkpoint['generator'])
         opt.start_epoch = checkpoint['epoch'] + 1
 
+    """
+    if opt.reinforced:
+        #lol manual positioning
+        opt.gpus = [0,1]
+        model.encoder.cuda(0)
+        model.decoder.cuda(1)
+        generator.cuda(0)
+    """    
     if len(opt.gpus) >= 1:
         model.cuda()
         generator.cuda()
@@ -414,7 +442,7 @@ def main():
         model.cpu()
         generator.cpu()
 
-    if len(opt.gpus) > 1:
+    if len(opt.gpus) > 1 and False:
         print('Multi gpu training ', opt.gpus)
         model = nn.DataParallel(model, device_ids=opt.gpus, dim=1)
         generator = nn.DataParallel(generator, device_ids=opt.gpus, dim=0)

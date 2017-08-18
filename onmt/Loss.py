@@ -118,6 +118,9 @@ class MemoryEfficientLoss:
         self.lambda_coverage = opt.lambda_coverage
         self.coverage_loss = coverage_loss
 
+        #TODO meeeeh
+        self.reinforce = True
+
     def score(self, loss_t, scores_t, targ_t):
         pred_t = scores_t.data.max(1)[1]
         non_padding = targ_t.ne(onmt.Constants.PAD).data
@@ -128,7 +131,13 @@ class MemoryEfficientLoss:
                           num_correct_t)
 
     def compute_std_loss(self, out_t, targ_t):
-        scores_t = self.generator(out_t)
+        #TODO meeeeeeh
+
+        already_vocab = True
+        if not already_vocab:
+            scores_t = self.generator(out_t)
+        else:
+            scores_t = out_t
         loss_t = self.crit(scores_t, targ_t.view(-1))
         return loss_t, scores_t
 
@@ -136,8 +145,9 @@ class MemoryEfficientLoss:
         scores_t, c_attn_t = self.generator(out_t, attn_t)
         loss_t = self.crit(scores_t, c_attn_t, targ_t, align_t)
         return loss_t, scores_t
+    
 
-    def loss(self, batch, outputs, attns):
+    def loss(self, batch, outputs, attns, loss=None):
         """
         Args:
             batch (Batch): Data object
@@ -160,19 +170,33 @@ class MemoryEfficientLoss:
             original["attn_t"] = attns["copy"]
             original["align_t"] = batch.alignment[1:]
 
+        if self.reinforce:
+            original["copy"] = attns
+            original["align_t"] = batch.alignment[1:]
+            original["loss_t"] = loss
+
         shards, dummies = shardVariables(original, self.max_batches, self.eval)
 
         def bottle(v):
             return v.view(-1, v.size(2))
         for s in shards:
-            if not self.copy_loss:
-                loss_t, scores_t = self.compute_std_loss(bottle(s["out_t"]),
-                                                         s["targ_t"])
-            else:
+            if self.copy_loss:
                 loss_t, scores_t = self.compute_copy_loss(
                     bottle(s["out_t"]), s["targ_t"],
                     bottle(s["attn_t"]), bottle(s["align_t"]))
 
+            elif self.reinforce:
+                """scores_t = bottle(s["out_t"])
+                c_attn_t = bottle(s["copy"])
+                align_t = bottle(s["align_t"])
+                targ_t = bottle(s["targ_t"].unsqueeze(2))
+                loss_t = self.crit(scores_t, c_attn_t, targ_t, align_t)"""
+                loss_t = s["loss"]
+            
+            else:
+                loss_t, scores_t = self.compute_std_loss(bottle(s["out_t"]),
+                                                         s["targ_t"])
+            
             if self.coverage_loss:
                 loss_t += self.lambda_coverage * torch.min(s["coverage"],
                                                            s["attn"]).sum()
@@ -184,3 +208,5 @@ class MemoryEfficientLoss:
         # Return the gradients
         inputs, grads = collectGrads(original, dummies)
         return stats, inputs, grads
+
+

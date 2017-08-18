@@ -61,8 +61,31 @@ class CopyGenerator(nn.Module):
 
 
 def CopyCriterion(probs, attn, targ, align, eps=1e-12):
-    copies = attn.mul(Variable(align)).sum(-1).add(eps)
+    """
+        Args
+            probs: [tgt_len*bs x vocab
+            attn: [tgt_len*bs x src_len]
+            targ: [tgt_len*bs x 1]
+            align: [tgt_len*bs x src_len]
+
+        Returns
+            
+    """
+    #print("attn: %s" % str(attn.size()))
+    #print("align: %s" % str(align.size()))
+    #print("probs: %s" % str(probs.size())) 
+    #print("targ: %s" % str(targ.size())) 
+    # create a [src_len] such as
+    # align.sum[i] = #{j | tgt[j] == src[i]
+    copies = attn.mul(Variable(align))
+    copies = copies.sum(-1)
+    copies = copies.add(eps)
     # Can't use UNK, must copy.
-    out = torch.log(probs.gather(1, targ.view(-1, 1)).view(-1) + copies + eps)
+    # probs: (tgt_len*b) x vocab
+    # 
+    out = probs.gather(1, targ.view(-1, 1))
+    out = out.view(-1)
+    out = out + copies + eps
+    out = torch.log(out)
     out = out.mul(targ.ne(onmt.Constants.PAD).float())
     return -out.sum()
