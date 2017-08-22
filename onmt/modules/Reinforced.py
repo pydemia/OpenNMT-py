@@ -24,9 +24,12 @@ class _Module(nn.Module):
             return o.cuda()
         return o
 
-    def mkvar(self, tensor):
-        assert type(tensor) == torch.Tensor, "Parameter must be a tensor, got %s" % type(tensor)
-        return self.maybe_cuda(torch.autograd.Variable(tensor))
+    def mkvar(self, tensor, requires_grad=False):
+        return self.maybe_cuda(torch.autograd.Variable(tensor, requires_grad=requires_grad))
+
+    def copyvar(self, var, requires_grad=True):
+        assert type(var) == torch.autograd.Variable, "Parameter must be a torch.Variable, got %s" % type(var)
+        return self.mkvar(var.data, requires_grad=requires_grad)
 
       
 
@@ -44,28 +47,30 @@ def _friendly_aeq(real, expected):
     assert real == expected, "got %s expected: %s" % (str(real), str(expected))
 
 class IntraAttention(_Module):
+    """IntraAttention Module as in sect. (2)
+    """
     def __init__(self, opt, dim, temporal=False):
         super(IntraAttention, self).__init__(opt)
         self.dim = dim
         self.temporal = temporal
         self.W_attn = nn.Parameter(torch.randn(dim, dim))
-        self.past_e = None
-        self.past_ee = None
 
-    def reset(self):
-        self.past_e, self.past_ee = None, None
-
-    def forward(self, h_t, h, t1=False):
+    def forward(self, h_t, h, E_history=None):
         """
-        inputs:
-            h_t (FloatTensor): batch x dim
-            h   (FloatTensor): n x batch x dim
+
+        args:
+            h_t (FloatTensor): [bs x dim]
+            h   (FloatTensor): [n x bs x dim]
                 for encoder_attn n is as in eq. (4), (5) i.e. src_len
                 for decoder_attn n is t-1
+            E_history: None
+                or (FloatTensor): [bs x n], sum of previous attn scores, aka. e'ti
 
         returns:
             alpha: [b x src]
             c_t: [b x dim]
+            E_history: None
+                or (FloatTensor): [bs x n], sum of attn scores, aka. e'ti.
         """
         dim = self.dim
         bs = h_t.size(0)
@@ -86,10 +91,16 @@ class IntraAttention(_Module):
 
         E_t = (h_t @ self.W_attn).unsqueeze(2).transpose(1, 2).bmm(h).squeeze(1)
 
-        #TODO local attention
-        EE_t = E_t.exp()
-        #print(n)
-        #print(EE_t.size())
+        if self.temporal:
+            if E_history is None:
+                EE_t = E_t.exp()
+                E_history = EE_t
+            else:
+                EE_t = E_t.exp() / E_history
+                # copy because autograd does not like in-place operation
+                E_history = self.copyvar(E_history) + E_t.exp()
+        else:
+            EE_t = E_t.exp()
         # sum(EE_t).usqueeze = [b x 1]
         # [b x n] / [b x 1] = [b x n] (broadcasting) 
         A_t = EE_t / (EE_t.sum(dim=1).unsqueeze(1))
@@ -101,6 +112,8 @@ class IntraAttention(_Module):
         assert_size(C_t, [bs, dim])
         assert_size(A_t, [bs, n])
 
+        if self.temporal:
+            return A_t, C_t, E_history
         return A_t, C_t
 
 
@@ -210,8 +223,6 @@ class ReinforcedDecoder(_Module):
         def bottle(v):
             return v.view(-1, v.size(2))
 
-        def _copy(var):
-            return torch.autograd.Variable(var.data, requires_grad=True)
 
         stats = onmt.Loss.Statistics()
         src = batch.src                 # [src_len x bs x 1]
@@ -233,13 +244,14 @@ class ReinforcedDecoder(_Module):
         
         
         hidden = init_state
+        E_hist = None
         for t, emb_t in enumerate(emb.split(1)):
             emb_t = emb_t.squeeze(0)
               
             out, hidden = self.rnn(emb_t, hidden)
             hd_t = hidden[0].squeeze(0)
-            alpha_e, c_e = self.enc_attn(_copy(hd_t), _copy(h_e), t1=(t==0))
-           
+            alpha_e, c_e, _E_hist = self.enc_attn(self.copyvar(hd_t), self.copyvar(h_e), E_hist)
+            E_hist = self.copyvar(_E_hist)
             
             if hd_history is None:
                 # [1 x bs x dim]
@@ -251,9 +263,9 @@ class ReinforcedDecoder(_Module):
             if t==0:
                 cd_t = self.maybe_cuda(torch.autograd.Variable(torch.zeros([bs, dim])))
             else:
-                alpha_d, cd_t = self.dec_attn(_copy(hd_t), _copy(hd_history))
+                alpha_d, cd_t = self.dec_attn(self.copyvar(hd_t), self.copyvar(hd_history))
             
-            p_gen, p_copy = self.pointer_generator(alpha_e, c_e, _copy(hd_t), cd_t)
+            p_gen, p_copy = self.pointer_generator(alpha_e, c_e, self.copyvar(hd_t), cd_t)
             loss_t, pred_t, stats_t = self.crit(p_gen, 
                                         p_copy, 
                                         tgt[t, :].unsqueeze(1), 
@@ -287,7 +299,6 @@ class MLCriterion(_Module):
         """
         bs, vocab_size = list(probs.size()) 
         
-        #TODO NOTE this is doing like abisee i.e. counts
         # [bs x src]
         copies = attn.mul(Variable(align))
 
