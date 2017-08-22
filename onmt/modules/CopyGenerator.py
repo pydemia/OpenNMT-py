@@ -71,6 +71,7 @@ def CopyCriterion(probs, attn, targ, align, eps=1e-12):
         Returns
             
     """
+    bq, vocab_size = list(probs.size())
     #print("attn: %s" % str(attn.size()))
     #print("align: %s" % str(align.size()))
     #print("probs: %s" % str(probs.size())) 
@@ -83,6 +84,10 @@ def CopyCriterion(probs, attn, targ, align, eps=1e-12):
     # Can't use UNK, must copy.
     # probs: (tgt_len*b) x vocab
     #
+
+    # copies: tgt*bs x src; one-hot src
+    copies_vocab = torch.zeros([bs, vocab_size])
+    copies_vocab.scatter_(1, src*src.lt(vocab_size), copies)
     
     #print(probs)
     #print(targ)

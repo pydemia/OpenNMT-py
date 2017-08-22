@@ -256,16 +256,17 @@ def trainModel(model, trainData, validData, dataset, optim):
                 #
                 #print("batch src: %s" % str(trunc_batch.src.size()))
                 #print("batch tgt: %s" % str(trunc_batch.tgt.size()))
-                outputs, attn, dec_state, loss = model(trunc_batch,
+                batch_stats, dec_state = model(trunc_batch,
                                                  dec_state)
                 
-                tot_loss += loss                
                                     
                 #print("TRAIN COMPUTE LOSS")
                 #batch_stats, inputs, grads \
                 #    = mem_loss.loss(trunc_batch, outputs, attn, loss=loss)
                 #exit() 
-                
+                b = batch_stats
+                print("batch stats: %d %d %.3f" % (b.n_correct, b.n_words, b.loss))
+                print("batch loss/w: %.3f" % (batch_stats.loss/batch_stats.n_words))
                 #print("TRAIN BACKWARD")
                 #torch.autograd.backward(inputs, grads, retain_variables=True)
                 #exit()
@@ -279,9 +280,11 @@ def trainModel(model, trainData, validData, dataset, optim):
                 optim.step()
                 #print("TRAIN STEP DONE")
                 #exit() 
-               
+                               
                 #print("TRAIN UPDATE")
-                #total_stats.update(batch_stats)
+                total_stats.update(batch_stats)
+                report_stats.update(batch_stats)
+
                 #report_stats.update(batch_stats)
                 if dec_state is not None:
                     dec_state.detach()
@@ -289,12 +292,12 @@ def trainModel(model, trainData, validData, dataset, optim):
             ep_loss += batch_loss
             n_iter = len(trainData)
             epoch_percent = 100 * (float(i+1) / n_iter)
-            print("Batch [%d/%d]\t(%.1f%%)\tloss: %.3f" % (i, n_iter, epoch_percent, batch_loss))
+            #print("Batch [%d/%d]\t(%.1f%%)\tloss: %.3f" % (i, n_iter, epoch_percent, batch_loss))
 
                 #print("Everything done")
             report_stats.n_src_words += batch.lengths.data.sum()
 
-            if False and i % opt.log_interval == -1 % opt.log_interval:
+            if i % opt.log_interval == -1 % opt.log_interval:
                 report_stats.output(epoch, i+1, len(trainData),
                                     total_stats.start_time)
                 if opt.log_server:
