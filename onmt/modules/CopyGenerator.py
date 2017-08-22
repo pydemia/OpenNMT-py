@@ -61,52 +61,8 @@ class CopyGenerator(nn.Module):
 
 
 def CopyCriterion(probs, attn, targ, align, eps=1e-12):
-    """
-        Args
-            probs: [tgt_len*bs x vocab
-            attn: [tgt_len*bs x src_len]
-            targ: [tgt_len*bs x 1]
-            align: [tgt_len*bs x src_len]
-
-        Returns
-            
-    """
-    bq, vocab_size = list(probs.size())
-    #print("attn: %s" % str(attn.size()))
-    #print("align: %s" % str(align.size()))
-    #print("probs: %s" % str(probs.size())) 
-    #print("targ: %s" % str(targ.size())) 
-    # create a [src_len] such as
-    # align.sum[i] = #{j | tgt[j] == src[i]
-    copies = attn.mul(Variable(align))
-    copies = copies.sum(-1)
-    copies = copies.add(eps)
+    copies = attn.mul(Variable(align)).sum(-1).add(eps)
     # Can't use UNK, must copy.
-    # probs: (tgt_len*b) x vocab
-    #
-
-    # copies: tgt*bs x src; one-hot src
-    copies_vocab = torch.zeros([bs, vocab_size])
-    copies_vocab.scatter_(1, src*src.lt(vocab_size), copies)
-    
-    #print(probs)
-    #print(targ)
-    #print("print attn then align")
-    #print(attn)
-    #print(align)
-    #print("print copies")
-    #print(copies)
-    out = probs.gather(1, targ.view(-1, 1))
-    #print("print after gather")
-    #print(out)
-    out = out.view(-1)
-    #print("after view")
-    #print(out)
-    out = out + copies + eps
-    #print("print after sum")
-    #print(out)
-    out = torch.log(out)
-    #print("out after log")
-    #print(out)
+    out = torch.log(probs.gather(1, targ.view(-1, 1)).view(-1) + copies + eps)
     out = out.mul(targ.ne(onmt.Constants.PAD).float())
     return -out.sum()
