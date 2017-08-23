@@ -29,6 +29,8 @@ class _Module(nn.Module):
 
     def copyvar(self, var, requires_grad=True):
         assert type(var) == torch.autograd.Variable, "Parameter must be a torch.Variable, got %s" % type(var)
+        if not self.training:
+            return var
         return self.mkvar(var.data, requires_grad=requires_grad)
 
       
@@ -273,7 +275,8 @@ class ReinforcedDecoder(_Module):
                                         src.squeeze(2).t())
             stats.update(stats_t)
             #loss_t /= batch.batchSize
-            loss_t.backward()
+            if self.training:
+                loss_t.backward()
         
         dec_state = onmt.Models.RNNDecoderState(hidden)
         return stats, dec_state

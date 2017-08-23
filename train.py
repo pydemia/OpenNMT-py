@@ -197,10 +197,10 @@ def eval(model, criterion, data):
     model.eval()
     loss = onmt.Loss.MemoryEfficientLoss(opt, model.generator, criterion,
                                          eval=True, copy_loss=opt.copy_attn)
+    dec_hidden = None
     for i in range(len(data)):
         batch = data[i]
-        outputs, attn, dec_hidden = model(batch.src, batch.tgt, batch.lengths)
-        batch_stats, _, _ = loss.loss(batch, outputs, attn)
+        batch_stats, dec_hidden = model(batch, dec_hidden)
         stats.update(batch_stats)
     model.train()
     return stats
@@ -269,7 +269,7 @@ def trainModel(model, trainData, validData, dataset, optim):
                 #report_stats.update(batch_stats)
                 if dec_state is not None:
                     dec_state.detach()
-            
+
             report_stats.n_src_words += batch.lengths.data.sum()
 
             if i % opt.log_interval == -1 % opt.log_interval:
@@ -278,8 +278,6 @@ def trainModel(model, trainData, validData, dataset, optim):
                 if opt.log_server:
                     report_stats.log("progress", experiment, optim)
                 report_stats = onmt.Loss.Statistics()
-
-        print("\nEp loss: %f" % (ep_loss/(i+1)))
         return total_stats
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
