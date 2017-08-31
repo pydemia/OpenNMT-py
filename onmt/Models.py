@@ -398,10 +398,14 @@ class DecoderState(object):
 
     def repeatBeam_(self, beamSize):
         self._resetAll([Variable(e.data.repeat(1, beamSize, 1))
+                        if isinstance(e, Variable)
+                        else e
                         for e in self.all])
 
     def beamUpdate_(self, idx, positions, beamSize):
         for e in self.all:
+            if e is None:
+                continue
             a, br, d = e.size()
             sentStates = e.view(a, beamSize, br // beamSize, d)[:, :, idx]
             sentStates.data.copy_(
