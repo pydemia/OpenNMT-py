@@ -9,6 +9,8 @@ import torch.nn as nn
 from torch.autograd import Variable
 import onmt
 import onmt.modules
+import onmt.Models
+
 def nparams(_):
   return sum([p.nelement() for p in _.parameters()])
 
@@ -34,7 +36,10 @@ class _Module(nn.Module):
         return self.mkvar(var.data, requires_grad=requires_grad)
 
       
-
+    def forward(self, *args, **kwargs):
+        if self.training:
+            return self.train_forward(*args, **kwargs)
+        return self.infer_forward(*args, **kwargs)
 def assert_size(v, size_list):
     """Check that variable(s) have size() == size_list
        v may be a variable, a tensor or a list
@@ -120,7 +125,7 @@ class IntraAttention(_Module):
 
 
 class PointerGenerator(_Module):
-    def __init__(self, opt, W_emb):
+    def __init__(self, opt, W_emb, pad_id):
         super(PointerGenerator, self).__init__(opt)
         self.dim = dim = opt.rnn_size
 
@@ -128,39 +133,38 @@ class PointerGenerator(_Module):
         self.softmax = nn.Softmax()
         self.sigmoid = nn.Sigmoid()
 
-        self.W_emb = W_emb
         n_emb, emb_dim = list(W_emb.size())
         
         self.W_proj = nn.Parameter(torch.Tensor(emb_dim, 3*dim))
-        print(type(self.W_emb.data))
-                #self.proj_u = nn.Linear(3*dim, 1, bias=True)
         self.W_u = nn.Parameter(torch.Tensor(1, 3*dim))
         self.b_u = nn.Parameter(torch.Tensor(1))
         self.proj_u = lambda V: self.W_u @ V + self.b_u
 
         self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
-        
+        self.W_emb = W_emb
 
-    def forward(self, ae_t, ce_t, hd_t, cd_t):
+        self.pad_id = pad_id
+
+    def forward(self, ae_t, ce_t, hd_t, cd_t, pad_id):
         """
         Implementing sect. 2.3: "Token generation and pointer"
         (and sect. 2.4 about weights sharing)
         Args:
-            ae_t: [b x src]
-            ce_t: [b x dim]
-            hd_t: [b x dim]
-            cd_t: [b x dim]
-
+            ae_t: [b*t x src]
+            ce_t: [b*t x dim]
+            hd_t: [b*t x dim]
+            cd_t: [b*t x dim]
         Returns:
-            p_gen: [bs x vocab_size]
-            p_copy: [bs x src_len]
+            p_gen: [bs*t x vocab_size]
+            p_copy: [bs*t x src_len]
+            p_switch: [bs*t]
         """
         dim = self.dim
-        bs,src_len = list(ae_t.size())
-        assert_size(ae_t, [bs, src_len])
-        assert_size(ce_t, [bs,dim])
-        assert_size(hd_t, [bs,dim])
-        assert_size(cd_t, [bs,dim])
+        n, src_len = list(ae_t.size())
+        assert_size(ae_t, [n, src_len])
+        assert_size(ce_t, [n, dim])
+        assert_size(hd_t, [n, dim])
+        assert_size(cd_t, [n, dim])
         n_emb = self.b_out.size(0)
         
         # [3*dim x bs]
@@ -168,34 +172,41 @@ class PointerGenerator(_Module):
         
         # (11), [bs] 
         p_switch = self.sigmoid(self.proj_u(c_cat)).squeeze(0) # [bs]
-        assert_size(p_switch, [bs])
+        assert_size(p_switch, [n])
        
         self.W_out = self.tanh(self.W_emb @ self.W_proj)
         self.proj_out = lambda V: self.W_out @ V + self.b_out
-
-        p_gen = (1-p_switch.view(-1, 1)) * self.softmax(self.proj_out(c_cat).t())
-        p_copy = (p_switch * ae_t.t()).t() # t() needed for broadcasting
         
-        assert_size(p_gen, [bs, n_emb])
-        assert_size(p_copy, [bs, src_len])
-        return p_gen, p_copy
+        logits = self.proj_out(c_cat).t()
+        logits[:, self.pad_id] = -float('inf')
+        p_gen =  self.softmax(logits+1e-12)
+        p_copy = ae_t 
+        
+        assert_size(p_gen, [n, n_emb])
+        assert_size(p_copy, [n, src_len])
+        return p_gen, p_copy, p_switch
 
 
 class ReinforcedDecoder(_Module):
-    def __init__(self, opt, embeddings):
+    def __init__(self, opt, embeddings, pad_id):
         super(ReinforcedDecoder, self).__init__(opt)
-        self.input_size = opt.word_vec_size
+        W_emb = embeddings.word_lut.weight
+        self.input_size = W_emb.size(1)
         
+        #TODO 
+        self.tgt_vocab_size = W_emb.size(0)
+
         self.dim = opt.rnn_size
         self.rnn = onmt.modules.StackedLSTM(1, self.input_size, opt.rnn_size, opt.dropout)
 
         self.enc_attn = IntraAttention(opt, self.dim, temporal=True)
         self.dec_attn = IntraAttention(opt, self.dim)
 
-        W_emb = embeddings.word_lut.weight
-        self.pointer_generator = PointerGenerator(opt, W_emb)
+        self.pointer_generator = PointerGenerator(opt, W_emb,pad_id)
         self.embeddings = embeddings
-        
+       
+
+        self.decoder_layer = "reinforced"
         print("ReinforcedDecoder params: %d" % nparams(self))
         print("enc_attn: %s" % nparams(self.enc_attn))
         print({n: p.nelement() for n,p in self.enc_attn.named_parameters()})
@@ -208,48 +219,56 @@ class ReinforcedDecoder(_Module):
         print({n: p.nelement() for n,p in self.rnn.named_parameters()})
 
         self.crit = MLCriterion(opt)
+        self.pad_id = pad_id
+        
 
-    def forward(self, batch, h_e, init_state):
+    def forward(self, inputs, src, h_e, init_state, tgt=None):
         """
         Args:
-            batch: onmt.Dataset.Batch
-            #TODO remove it
-            ***inputs: tgt_len x batch -- tgt tokens
-            ***src: src_len x batch x 1
+            inputs: tgt_len x batch -- tgt tokens
+            src: src_len x batch x 1
             h_e: src_len x batch x dim
+            init_state: a decoder state
 
         Returns:
             dec_state: onmt.Models.RNNDecoderState
             stats: onmt.Loss.Statistics  
         """
+
         def bottle(v):
             return v.view(-1, v.size(2))
 
 
         stats = onmt.Loss.Statistics()
-        src = batch.src                 # [src_len x bs x 1]
-        tgt = batch.tgt                # [tgt_len x bs]
-        lengths = batch.lengths         # [1 x bs]
-        align = batch.alignment
-        inputs = tgt[:-1]
+        #src = batch.src                 # [src_len x bs x 1]
+        #tgt = batch.tgt                # [tgt_len x bs]
+        #lengths = batch.lengths         # [1 x bs]
+        #align = batch.alignment
+        #inputs = tgt[:-1]
         
         dim = self.dim
         src_len, bs, _ = list(src.size())
-        tgt_len = tgt.size(0)
+        input_size, _bs = list(inputs.size())
+        assert bs == _bs
         
-        assert_size(tgt, [tgt_len, bs])
+        assert_size(inputs, [input_size, bs])
         assert_size(h_e, [src_len, bs, dim])
         
         emb = self.embeddings(inputs.unsqueeze(2))
         
-        hd_history = None #[]
-        
-        
-        hidden = init_state
+        if init_state.coverage is not None:
+            hd_history = init_state.coverage
+        else:
+            hd_history = None
+
+        scores = None if self.training else []
+        attns = []
+
+        hidden = init_state.hidden
         E_hist = None
-        for t, emb_t in enumerate(emb.split(1)):
+        for t, emb_t in enumerate(emb.split(1, dim=0)):
             emb_t = emb_t.squeeze(0)
-              
+             
             out, hidden = self.rnn(emb_t, hidden)
             hd_t = hidden[0].squeeze(0)
             alpha_e, c_e, _E_hist = self.enc_attn(self.copyvar(hd_t), self.copyvar(h_e), E_hist)
@@ -264,107 +283,79 @@ class ReinforcedDecoder(_Module):
             
             if t==0:
                 cd_t = self.maybe_cuda(torch.autograd.Variable(torch.zeros([bs, dim])))
+                alpha_d = self.copyvar(cd_t)
             else:
                 alpha_d, cd_t = self.dec_attn(self.copyvar(hd_t), self.copyvar(hd_history))
             
-            p_gen, p_copy = self.pointer_generator(alpha_e, c_e, self.copyvar(hd_t), cd_t)
-            loss_t, pred_t, stats_t = self.crit(p_gen, 
-                                        p_copy, 
-                                        tgt[t, :].unsqueeze(1), 
-                                        align[t, :, :].squeeze(0), 
-                                        src.squeeze(2).t())
+            # [bs*t x voc], [bs*t x src_len], x [bs*t]
+            p_gen, p_copy, p_switch = self.pointer_generator(alpha_e, 
+                                            c_e, 
+                                            self.copyvar(hd_t), 
+                                            cd_t, 
+                                            self.pad_id)
+            
+            eps=1e-12
+            n = bs
+            voc = p_gen.size(1)
+            gen_scores = p_gen * p_switch.view(-1, 1)
+            inputs_t = inputs[t, :]
+            # [bs*t x d_voc]
+            copy_scores = self.mkvar(torch.zeros(n, max(src.max().data[0], voc)))
+            copy_scores.scatter_(1, src.squeeze(2).t(), p_copy)
+            copy_scores[:, :self.tgt_vocab_size] = copy_scores[:, :self.tgt_vocab_size].clone() * p_switch.view(-1,1).expand([n, self.tgt_vocab_size])
+
+            
+            scores_t = copy_scores
+            scores_t[:, :self.tgt_vocab_size] = scores_t[:, :self.tgt_vocab_size].clone() + gen_scores
+
+            
+            pred_t = scores_t.max(1)[1]
+            l = 0
+            correct_words = 0
+
+            if self.training or tgt is not None:
+                targ_t = tgt[t, :].view(-1, 1)
+
+                loss_t = torch.log(scores_t.gather(1, targ_t) + eps)
+                loss_t = loss_t.mul(targ_t.ne(self.pad_id).float())
+                # incorrect size for targ_t or loss_t may less to [bs x bs] loss_t
+                # without errors
+                assert_size(loss_t, [bs, 1])
+                
+                loss_t = -loss_t.sum()
+                l = loss_t.data[0]
+                correct_words = pred_t.view(-1).eq(targ_t.view(-1)).float().sum().data[0]
+            non_padding = targ_t.ne(self.pad_id).float()
+            n_words = non_padding.sum()
+            
+            stats_t = onmt.Loss.Statistics(loss=l,
+                                      n_words=n_words.data[0],
+                                      n_correct=correct_words)
             stats.update(stats_t)
-            #loss_t /= batch.batchSize
             if self.training:
-                loss_t.backward()
+                loss_t.div(bs).backward()
+            else:
+                scores += [scores_t]
+                attns += [alpha_d]
         
-        dec_state = onmt.Models.RNNDecoderState(hidden)
-        return stats, dec_state
+        dec_state = onmt.Models.RNNDecoderState(hidden, coverage=hd_history)
+        return stats, dec_state, scores, attns
 
-class MLCriterion(_Module):
 
-    def __init__(self, opt):
-        super(MLCriterion, self).__init__(opt)
-        
-    def forward(self, probs, attn, targ, align, src, eps=1e-12):
-        """
-        Args:
-            probs: [tgt_len*bs x vocab
-            attn: [tgt_len*bs x src_len]
-            targ: [tgt_len*bs x 1]
-            align: [tgt_len*bs x src_len]
-            src: [bs x src_len]
-        
-        Returns:
-            loss: Variable, [1]
-            predictions:
-            stats: onmt.Loss.Statistics
-        """
-        bs, vocab_size = list(probs.size()) 
-        
-        # [bs x src]
-        copies = attn.mul(Variable(align))
-
-        # create a [bs x vocab_size] 
-        # matrix such as copies_voc[i] = 0 or copies[j] if src[j] == i
-        copies_voc = self.mkvar(torch.zeros([bs, vocab_size]))
-
-        # src that are in vocabulary, 0 else
-        voc_src = src*src.lt(vocab_size).long()
-        
-        # copy probability of in vocabulary src tokens
-        copies_voc.scatter_(1,voc_src, copies)
-        
-        # total probability of prediction in vocabulary tokens
-        voc_probs = probs + copies_voc
-
-        # in voc tokens sorted by max
-        # it outputs a tuple (max, argmax)
-        max_voc_probs = voc_probs.data.max(1)
-        max_copies_probs = copies.data.max(1)
-
-        # out of voc tokens that would be copied
-        oov_tokens = src.gather(1, max_copies_probs[1].unsqueeze(1))
-
-        # are oov probability greater than generator?
-        gen_oov = max_voc_probs[0].lt(max_copies_probs[0]).long()
-
-        predictions = (1-gen_oov) * max_voc_probs[1] \
-                    +  gen_oov    * oov_tokens.squeeze(1).data
-
-        non_padding = targ.ne(onmt.Constants.PAD).data
-        
-        num_correct = predictions.unsqueeze(1).eq(targ.data) \
-                              .masked_select(non_padding) \
-                              .sum()
-        num_words = non_padding.sum()
-        
-        # probability that the y* = p_gen(y*) + p_copy(y*)
-        # below vectors are [bs x 1]
-        targ_gen_probs = probs.gather(1, targ.view(-1, 1))
-        targ_copy_probs = copies.sum(-1).add(eps).view(-1, 1)
-        tot_prob = targ_gen_probs + targ_copy_probs + eps
-        
-        loss = torch.log(tot_prob)
-
-        # masking
-        loss = loss.mul(targ.ne(onmt.Constants.PAD).float())
-        assert_size(loss, [bs, 1]) 
-        
-        loss = -loss.sum() 
-        stats = onmt.Loss.Statistics(loss=loss.data[0],
-                                     n_words=num_words,
-                                     n_correct=num_correct)
-        return loss, predictions, stats
-
-class ReinforcedModel(nn.Module):
+class ReinforcedModel(onmt.Models.NMTModel):
     def __init__(self, encoder, decoder, multigpu=False):
-        super(ReinforcedModel, self).__init__()
-        self.encoder = encoder
-        self.decoder = decoder
+        super(ReinforcedModel, self).__init__(encoder, decoder)
         print("#PARAMS TOTAL: %d"
                 % nparams(self))
         print({n: p.nelement() for n,p in self.named_parameters()})
+   
+    def init_decoder_state(self, enc_hidden, context=None):
+        state = super(ReinforcedModel, self).init_decoder_state(enc_hidden=enc_hidden,
+                                                    context=None,
+                                                    input_feed=False)
+        #temp_state = TemporalDecoderState(state.hidden, None)
+        return state #temp_state
+
     def forward(self, batch, dec_state=None):
         """
         Args:
@@ -389,12 +380,9 @@ class ReinforcedModel(nn.Module):
         #out: hidden_t pair of layers x batch x rnn_size, outputs:  len x batch x rnn_size
         enc_hidden, enc_out = self.encoder(src, lengths)
         
-        # TODO 1 below is actually opt.layers
-        # must check not to destroy anything
-        # not a priority
-        enc_hidden = [ state.view([1, bs, 2*state.size(2)]) for state in enc_hidden]
+        if dec_state is None:
+            dec_state = self.init_decoder_state(enc_hidden=enc_hidden)
 
-        stats, dec_state = self.decoder(batch, enc_out, enc_hidden)
+        stats, dec_state, _, _ = self.decoder(batch.tgt[:-1], batch.src, enc_out, dec_state, tgt=batch.tgt[1:])
         
         return stats, dec_state
-

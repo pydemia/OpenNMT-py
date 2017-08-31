@@ -33,9 +33,6 @@ class Translator(object):
         elif self._type == "img":
             encoder = onmt.modules.ImageEncoder(model_opt)
 
-        decoder = onmt.Models.Decoder(model_opt, self.tgt_dict)
-        model = onmt.Models.NMTModel(encoder, decoder)
-
         if not self.copy_attn or self.copy_attn == "std":
             generator = nn.Sequential(
                 nn.Linear(model_opt.rnn_size, self.tgt_dict.size()),
@@ -43,9 +40,17 @@ class Translator(object):
         elif self.copy_attn:
             generator = onmt.modules.CopyGenerator(model_opt, self.src_dict,
                                                    self.tgt_dict)
+        if model_opt.reinforced:
+            decoder = onmt.Reinforced.ReinforcedDecoder(model_opt, encoder.embeddings, onmt.Constants.PAD)
+            model = onmt.Reinforced.ReinforcedModel(encoder, decoder, generator)
+        else:
+            decoder = onmt.Models.Decoder(model_opt, self.tgt_dict)
+            model = onmt.Models.NMTModel(encoder, decoder)
 
+        self.model_opt = model_opt
+        model.generator = decoder.pointer_generator
+        #generator.load_state_dict(checkpoint['generator'])
         model.load_state_dict(checkpoint['model'])
-        generator.load_state_dict(checkpoint['generator'])
 
         if opt.cuda:
             model.cuda()
@@ -102,44 +107,50 @@ class Translator(object):
         return tokens
 
     def translateBatch(self, batch):
+        
         beamSize = self.opt.beam_size
         batchSize = batch.batchSize
-
         #  (1) run the encoder on the src
         encStates, context = self.model.encoder(
             batch.src, lengths=batch.lengths)
-        encStates = self.model.init_decoder_state(context, encStates)
+        encStates = self.model.init_decoder_state(context=context, enc_hidden=encStates)
 
         decoder = self.model.decoder
-        attentionLayer = decoder.attn
-        useMasking = (self._type == "text")
-
-        #  This mask is applied to the attention model inside the decoder
-        #  so that the attention ignores source padding
         padMask = None
+        useMasking = (self._type == "text") and not self.model_opt.reinforced
         if useMasking:
+            attentionLayer = decoder.attn
             padMask = batch.words().data.eq(onmt.Constants.PAD).t()
+
+        reinforced = True
 
         def mask(padMask):
             if useMasking:
                 attentionLayer.applyMask(padMask)
+                
 
         #  (2) if a target is specified, compute the 'goldScore'
         #  (i.e. log likelihood) of the target under the model
         goldScores = context.data.new(batchSize).zero_()
         if batch.tgt is not None:
             decStates = encStates
-            mask(padMask.unsqueeze(0))
-            decOut, decStates, attn = self.model.decoder(batch.tgt[:-1],
-                                                         batch.src,
-                                                         context,
-                                                         decStates)
-            for dec_t, tgt_t in zip(decOut, batch.tgt[1:].data):
-                gen_t = self.model.generator.forward(dec_t)
-                tgt_t = tgt_t.unsqueeze(1)
-                scores = gen_t.data.gather(1, tgt_t)
-                scores.masked_fill_(tgt_t.eq(onmt.Constants.PAD), 0)
-                goldScores += scores
+            if reinforced:
+                stats, dec_state, scores, attn = self.model.decoder(batch.tgt[:-1], batch.src, context, decStates) 
+                goldScores += torch.stack(scores).data
+            else:
+                #  This mask is applied to the attention model inside the decoder
+                #  so that the attention ignores source padding
+                
+                decOut, decStates, attn = self.model.decoder(batch.tgt[:-1],
+                                                             batch.src,
+                                                             context,
+                                                             decStates)
+                for dec_t, tgt_t in zip(decOut, batch.tgt[1:].data):
+                    gen_t = self.model.generator.forward(dec_t)
+                    tgt_t = tgt_t.unsqueeze(1)
+                    scores = gen_t.data.gather(1, tgt_t)
+                    scores.masked_fill_(tgt_t.eq(onmt.Constants.PAD), 0)
+                    goldScores += scores
 
         #  (3) run the decoder to generate sentences, using beam search
         # Each hypothesis in the beam uses the same context
@@ -163,37 +174,44 @@ class Translator(object):
             input = torch.stack([b.getCurrentState() for b in beam])\
                          .t().contiguous().view(1, -1)
             input = Variable(input, volatile=True)
-            decOut, decStates, attn = self.model.decoder(input, batch_src,
-                                                         context, decStates)
-            decOut = decOut.squeeze(0)
-            # decOut: (beam*batch) x numWords
-            attn["std"] = attn["std"].view(beamSize, batchSize, -1) \
-                                     .transpose(0, 1).contiguous()
 
-            # (b) Compute a vector of batch*beam word scores.
-            if not self.copy_attn:
-                out = self.model.generator.forward(decOut)
+            if reinforced:
+                else:
+                stats, decStates, scores, attns = self.model.decoder(input, batch_src, context, decStates)
+                word_scores = torch.stack(scores).view(beamSize, batchSize, -1).transpose(0,1)
+                attn = {'std': torch.stack(attns).view(beamSize, batchSize, -1).transpose(0,1)}
             else:
-                # Copy Attention Case
-                words = batch.words().t()
-                words = torch.stack([words[i] for i, b in enumerate(beam)])\
-                             .contiguous()
-                attn_copy = attn["copy"].view(beamSize, batchSize, -1) \
-                                        .transpose(0, 1).contiguous()
+                decOut, decStates, attn = self.model.decoder(input, batch_src,
+                                                             context, decStates)
+                decOut = decOut.squeeze(0)
+                # decOut: (beam*batch) x numWords
+                attn["std"] = attn["std"].view(beamSize, batchSize, -1) \
+                                         .transpose(0, 1).contiguous()
 
-                out, c_attn_t \
-                    = self.model.generator.forward(
-                        decOut, attn_copy.view(-1, batch_src.size(0)))
+                # (b) Compute a vector of batch*beam word scores.
+                if not self.copy_attn:
+                    out = self.model.generator.forward(decOut)
+                else:
+                    # Copy Attention Case
+                    words = batch.words().t()
+                    words = torch.stack([words[i] for i, b in enumerate(beam)])\
+                                 .contiguous()
+                    attn_copy = attn["copy"].view(beamSize, batchSize, -1) \
+                                            .transpose(0, 1).contiguous()
 
-                for b in range(out.size(0)):
-                    for c in range(c_attn_t.size(1)):
-                        v = self.align[words[0, c].data[0]]
-                        if v != onmt.Constants.PAD:
-                            out[b, v] += c_attn_t[b, c]
-                out = out.log()
+                    out, c_attn_t \
+                        = self.model.generator.forward(
+                            decOut, attn_copy.view(-1, batch_src.size(0)))
 
-            word_scores = out.view(beamSize, batchSize, -1) \
-                .transpose(0, 1).contiguous()
+                    for b in range(out.size(0)):
+                        for c in range(c_attn_t.size(1)):
+                            v = self.align[words[0, c].data[0]]
+                            if v != onmt.Constants.PAD:
+                                out[b, v] += c_attn_t[b, c]
+                    out = out.log()
+
+                word_scores = out.view(beamSize, batchSize, -1) \
+                    .transpose(0, 1).contiguous()
             # batch x beam x numWords
 
             # (c) Advance each beam.

@@ -200,7 +200,7 @@ def eval(model, criterion, data):
     dec_hidden = None
     for i in range(len(data)):
         batch = data[i]
-        batch_stats, dec_hidden = model(batch, dec_hidden)
+        batch_stats, _ = model(batch, dec_hidden)
         stats.update(batch_stats)
     model.train()
     return stats
@@ -234,7 +234,6 @@ def trainModel(model, trainData, validData, dataset, optim):
         total_stats = onmt.Loss.Statistics()
         report_stats = onmt.Loss.Statistics()
         
-        ep_loss = 0
         for i in range(len(trainData)):
             batchIdx = batchOrder[i] if epoch > opt.curriculum else i
             batch = trainData[batchIdx]
@@ -304,7 +303,7 @@ def trainModel(model, trainData, validData, dataset, optim):
         model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
                             else model.state_dict())
         model_state_dict = {k: v for k, v in model_state_dict.items()
-                            if 'generator' not in k}
+                            }#if "generator" not in k}
         generator_state_dict = (model.generator.module.state_dict()
                                 if len(opt.gpus) > 1
                                 else model.generator.state_dict())
@@ -312,7 +311,7 @@ def trainModel(model, trainData, validData, dataset, optim):
         if epoch >= opt.start_checkpoint_at:
             checkpoint = {
                 'model': model_state_dict,
-                'generator': generator_state_dict,
+                #'generator': generator_state_dict,
                 'dicts': dataset['dicts'],
                 'opt': opt,
                 'epoch': epoch,
@@ -369,8 +368,8 @@ def main():
         #opt.rnn_size = 200
         encoder = onmt.Models.Encoder(opt, dicts['src'],
                                       dicts.get('src_features', None))
-        decoder = onmt.modules.ReinforcedDecoder(opt, encoder.embeddings)
-        model = onmt.modules.ReinforcedModel(encoder, decoder)
+        decoder = onmt.Reinforced.ReinforcedDecoder(opt, encoder.embeddings, pad_id=onmt.Constants.PAD)
+        model = onmt.Reinforced.ReinforcedModel(encoder, decoder)
 
     else:
         if opt.encoder_type == "text":
@@ -387,6 +386,8 @@ def main():
     
     if opt.copy_attn:
         generator = onmt.modules.CopyGenerator(opt, dicts['src'], dicts['tgt'])
+    elif opt.reinforced:
+        generator = decoder.pointer_generator
     else:
         generator = nn.Sequential(
             nn.Linear(opt.rnn_size, dicts['tgt'].size()),
@@ -400,7 +401,7 @@ def main():
         chk_model = checkpoint['model']
         generator_state_dict = chk_model.generator.state_dict()
         model_state_dict = {k: v for k, v in chk_model.state_dict().items()
-                            if 'generator' not in k}
+                           }
         model.load_state_dict(model_state_dict)
         generator.load_state_dict(generator_state_dict)
         opt.start_epoch = checkpoint['epoch'] + 1

@@ -336,11 +336,12 @@ class Decoder(nn.Module):
 
 
 class NMTModel(nn.Module):
-    def __init__(self, encoder, decoder, multigpu=False):
+    def __init__(self, encoder, decoder, generator=None, multigpu=False):
         self.multigpu = multigpu
         super(NMTModel, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
+        self.generator = generator
 
     def _fix_enc_hidden(self, h):
         """
