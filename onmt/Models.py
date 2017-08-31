@@ -351,7 +351,7 @@ class NMTModel(nn.Module):
             h = torch.cat([h[0:h.size(0):2], h[1:h.size(0):2]], 2)
         return h
 
-    def init_decoder_state(self, context, enc_hidden):
+    def init_decoder_state(self, context, enc_hidden, input_feed=True):
         if self.decoder.decoder_layer == "transformer":
             return TransformerDecoderState()
         elif isinstance(enc_hidden, tuple):
@@ -359,7 +359,9 @@ class NMTModel(nn.Module):
                                          for i in range(len(enc_hidden))]))
         else:
             dec = RNNDecoderState(self._fix_enc_hidden(enc_hidden))
-        dec.init_input_feed(context, self.decoder.hidden_size)
+
+        if input_feed:
+            dec.init_input_feed(context, self.decoder.hidden_size)
         return dec
 
     def forward(self, src, tgt, lengths, dec_state=None):
