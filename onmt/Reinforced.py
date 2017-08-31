@@ -218,7 +218,6 @@ class ReinforcedDecoder(_Module):
         print("rnn: %d" % nparams(self.rnn))
         print({n: p.nelement() for n,p in self.rnn.named_parameters()})
 
-        self.crit = MLCriterion(opt)
         self.pad_id = pad_id
         
 
@@ -325,13 +324,14 @@ class ReinforcedDecoder(_Module):
                 loss_t = -loss_t.sum()
                 l = loss_t.data[0]
                 correct_words = pred_t.view(-1).eq(targ_t.view(-1)).float().sum().data[0]
-            non_padding = targ_t.ne(self.pad_id).float()
-            n_words = non_padding.sum()
             
-            stats_t = onmt.Loss.Statistics(loss=l,
+                non_padding = targ_t.ne(self.pad_id).float()
+                n_words = non_padding.sum()
+            
+                stats_t = onmt.Loss.Statistics(loss=l,
                                       n_words=n_words.data[0],
                                       n_correct=correct_words)
-            stats.update(stats_t)
+                stats.update(stats_t)
             if self.training:
                 loss_t.div(bs).backward()
             else:

@@ -176,7 +176,6 @@ class Translator(object):
             input = Variable(input, volatile=True)
 
             if reinforced:
-                else:
                 stats, decStates, scores, attns = self.model.decoder(input, batch_src, context, decStates)
                 word_scores = torch.stack(scores).view(beamSize, batchSize, -1).transpose(0,1)
                 attn = {'std': torch.stack(attns).view(beamSize, batchSize, -1).transpose(0,1)}
