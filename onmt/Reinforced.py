@@ -95,7 +95,6 @@ class IntraAttention(_Module):
         # [b x 1 x dim] bmm [b x dim x n] = [b x 1 x n]
         # E = [b x 1 x n].unsqueeze, [b x n]
         # e_ti(b) = E[b][i]
-
         E_t = (h_t @ self.W_attn).unsqueeze(2).transpose(1, 2).bmm(h).squeeze(1)
 
         if self.temporal:
@@ -181,7 +180,10 @@ class PointerGenerator(_Module):
         logits[:, self.pad_id] = -float('inf')
         p_gen =  self.softmax(logits+1e-12)
         p_copy = ae_t 
-        
+
+        for name, probs in {"gen":p_gen,"copy":p_copy}.items():
+            probs_sum = probs.sum().data[0] / n
+            assert abs(probs_sum-1)<1e-4, "%s probabilities sum isn't 1 but %.10f" % (name, probs_sum)
         assert_size(p_gen, [n, n_emb])
         assert_size(p_copy, [n, src_len])
         return p_gen, p_copy, p_switch
@@ -233,11 +235,13 @@ class ReinforcedDecoder(_Module):
             dec_state: onmt.Models.RNNDecoderState
             stats: onmt.Loss.Statistics  
         """
+        #TODO WARNING remove it, extremly verbose
+        debug = True
 
         def bottle(v):
             return v.view(-1, v.size(2))
 
-
+        #print(torch.cat([inputs[0:2, :].t(), inputs[-2:, :].t()], dim=1)[:,:])
         stats = onmt.Loss.Statistics()
         #src = batch.src                 # [src_len x bs x 1]
         #tgt = batch.tgt                # [tgt_len x bs]
@@ -253,8 +257,6 @@ class ReinforcedDecoder(_Module):
         assert_size(inputs, [input_size, bs])
         assert_size(h_e, [src_len, bs, dim])
         
-        emb = self.embeddings(inputs.unsqueeze(2))
-        
         if init_state.coverage is not None:
             hd_history = init_state.coverage
         else:
@@ -262,17 +264,17 @@ class ReinforcedDecoder(_Module):
 
         scores = None if self.training else []
         attns = []
-
         hidden = init_state.hidden
         E_hist = None
-        for t, emb_t in enumerate(emb.split(1, dim=0)):
-            emb_t = emb_t.squeeze(0)
+        inputs_t = inputs[0, :]
+        for t in range(input_size):
+            emb_t = self.embeddings(inputs_t.view(1, -1, 1)).squeeze(0)
              
             out, hidden = self.rnn(emb_t, hidden)
-            hd_t = hidden[0].squeeze(0)
+            hd_t = out
             alpha_e, c_e, _E_hist = self.enc_attn(self.copyvar(hd_t), self.copyvar(h_e), E_hist)
             E_hist = self.copyvar(_E_hist)
-            
+
             if hd_history is None:
                 # [1 x bs x dim]
                 hd_history = hd_t.unsqueeze(0)
@@ -285,7 +287,7 @@ class ReinforcedDecoder(_Module):
                 alpha_d = self.copyvar(cd_t)
             else:
                 alpha_d, cd_t = self.dec_attn(self.copyvar(hd_t), self.copyvar(hd_history))
-            
+
             # [bs*t x voc], [bs*t x src_len], x [bs*t]
             p_gen, p_copy, p_switch = self.pointer_generator(alpha_e, 
                                             c_e, 
@@ -296,26 +298,26 @@ class ReinforcedDecoder(_Module):
             eps=1e-12
             n = bs
             voc = p_gen.size(1)
-            gen_scores = p_gen * p_switch.view(-1, 1)
-            inputs_t = inputs[t, :]
+
+            gen_scores = p_gen * (1-p_switch.view(-1, 1))
+
             # [bs*t x d_voc]
             copy_scores = self.mkvar(torch.zeros(n, max(src.max().data[0], voc)))
-            copy_scores.scatter_(1, src.squeeze(2).t(), p_copy)
-            copy_scores[:, :self.tgt_vocab_size] = copy_scores[:, :self.tgt_vocab_size].clone() * p_switch.view(-1,1).expand([n, self.tgt_vocab_size])
+            copy_scores.scatter_add_(1, src.squeeze(2).t(), p_copy)
+            copy_scores[:, :self.tgt_vocab_size] = copy_scores[:, :self.tgt_vocab_size].clone() \
+                                            * p_switch.view(-1,1).expand([n, self.tgt_vocab_size])
 
-            
             scores_t = copy_scores
             scores_t[:, :self.tgt_vocab_size] = scores_t[:, :self.tgt_vocab_size].clone() + gen_scores
-
             
-            pred_t = scores_t.max(1)[1]
+            pred_scores, pred_t = list(scores_t.max(1))
             l = 0
             correct_words = 0
-
             if self.training or tgt is not None:
                 targ_t = tgt[t, :].view(-1, 1)
 
-                loss_t = torch.log(scores_t.gather(1, targ_t) + eps)
+                target_scores = scores_t.gather(1, targ_t)
+                loss_t = torch.log(target_scores + eps)
                 loss_t = loss_t.mul(targ_t.ne(self.pad_id).float())
                 # incorrect size for targ_t or loss_t may less to [bs x bs] loss_t
                 # without errors
@@ -332,9 +334,28 @@ class ReinforcedDecoder(_Module):
                                       n_words=n_words.data[0],
                                       n_correct=correct_words)
                 stats.update(stats_t)
+                print(stats_t.loss / stats_t.n_words)
+            if debug:
+                to_cat = [inputs_t, pred_t, pred_scores, p_switch]
+                if tgt is not None:
+                    to_cat += [tgt[t, :].view(-1)]
+                    to_cat += [target_scores.view(-1)]
+                _ = [t.unsqueeze(1).float() for t in to_cat]
+                check_t = torch.cat(_, 1)
+
+                print("dec.in - pred - scores - p_switch - [tgt] - [tgt_scores]: %s" % str(check_t))
+                pass
             if self.training:
                 loss_t.div(bs).backward()
+                if t < input_size-1:
+                    exposure_mask = self.mkvar(torch.rand([bs]).lt(0.25)).long()
+                    inputs_t = exposure_mask * pred_t.long()
+                    inputs_t += (1-exposure_mask.float()).long() * inputs[t+1, :]
+
+
             else:
+                if t < input_size-1:
+                    inputs_t = inputs[t+1, :]
                 scores += [scores_t]
                 attns += [alpha_d]
         

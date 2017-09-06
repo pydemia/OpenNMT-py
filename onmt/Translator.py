@@ -97,13 +97,15 @@ class Translator(object):
                             srcFeatures=srcFeats)
 
     def buildTargetTokens(self, pred, src, attn):
-        tokens = self.tgt_dict.convertToLabels(pred, onmt.Constants.EOS)
+        #tokens = self.tgt_dict.convertToLabels(pred, onmt.Constants.EOS)
+        tokens = self.src_dict.convertToLabels(pred, onmt.Constants.EOS)
         tokens = tokens[:-1]  # EOS
-        if self.opt.replace_unk:
+        """if self.opt.replace_unk:
             for i in range(len(tokens)):
                 if tokens[i] == onmt.Constants.UNK_WORD:
                     _, maxIndex = attn[i].max(0)
                     tokens[i] = src[maxIndex[0]]
+        """
         return tokens
 
     def translateBatch(self, batch):
@@ -174,6 +176,7 @@ class Translator(object):
             input = torch.stack([b.getCurrentState() for b in beam])\
                          .t().contiguous().view(1, -1)
             input = Variable(input, volatile=True)
+            print("trsl.input: %s" % str(input.view(-1, 1)))
 
             if reinforced:
                 stats, decStates, scores, attns = self.model.decoder(input, batch_src, context, decStates)

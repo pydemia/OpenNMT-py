@@ -40,7 +40,7 @@ parser.add_argument('-word_vec_size', type=int, default=500,
 parser.add_argument('-feature_vec_size', type=int, default=100,
                     help='Feature vec sizes')
 
-parser.add_argument('-input_feed', type=int, default=1,
+parser.add_argument('-input_feed', type=int, default=0,
                     help="""Feed the context vector at each time step as
                     additional input (via concatenation with the word
                     embeddings) to the decoder.""")
@@ -258,7 +258,6 @@ def trainModel(model, trainData, validData, dataset, optim):
                 b = batch_stats
                 print("batch stats: %d %d %.3f" % (b.n_correct, b.n_words, b.loss))
                 print("batch loss/w: %.3f" % (batch_stats.loss/batch_stats.n_words))
-                
                 # Update the parameters.
                 optim.step()
                                
