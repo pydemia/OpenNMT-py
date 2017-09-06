@@ -42,6 +42,9 @@ class Statistics:
         self.n_correct += stat.n_correct
 
     def accuracy(self):
+        if self.n_words == 0:
+            print("ERROR with n_words")
+            return -1
         return 100 * (self.n_correct / float(self.n_words))
 
     def ppl(self):
@@ -60,6 +63,7 @@ class Statistics:
                self.n_src_words / (t + 1e-5),
                self.n_words / (t + 1e-5),
                time.time() - start))
+
         sys.stdout.flush()
 
     def log(self, prefix, experiment, optim):

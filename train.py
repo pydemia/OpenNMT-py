@@ -57,6 +57,8 @@ if opt.exp_host != "":
 
 
 def eval(model, criterion, data, fields):
+    if opt.reinforced:
+        return eval_reinforce(model, data)
     valid_data = onmt.IO.OrderedIterator(
         dataset=data, device=opt.gpuid[0] if opt.gpuid else -1,
         batch_size=opt.batch_size, train=False, sort=True)
@@ -76,7 +78,22 @@ def eval(model, criterion, data, fields):
         stats.update(batch_stats)
     model.train()
     return stats
+    
+def eval_reinforce(model, data):
+    valid_data = onmt.IO.OrderedIterator(
+        dataset=data, device=opt.gpuid[0] if opt.gpuid else -1,
+        batch_size=opt.batch_size, train=False, sort=True)
+    stats = onmt.Loss.Statistics()
+    model.eval()
+    
+    dec_hidden = None
+    for i in range(len(data)):
+        batch = data[i]
+        batch_stats, _ = model(batch, dec_hidden)
+        stats.update(batch_stats)
 
+    model.train()
+    return stats
 
 def train_model(model, train_data, valid_data, fields, optim):
     model.train()
@@ -84,7 +101,9 @@ def train_model(model, train_data, valid_data, fields, optim):
     pad_id = fields['tgt'].vocab.stoi[onmt.IO.PAD_WORD]
 
     # Define criterion of each GPU.
-    if not opt.copy_attn:
+    if opt.reinforced:
+        criterion = None
+    elif not opt.copy_attn:
         criterion = onmt.Loss.NMTCriterion(len(fields['tgt'].vocab), opt,
                                            pad_id)
     else:
@@ -120,32 +139,43 @@ def train_model(model, train_data, valid_data, fields, optim):
             trunc_size = opt.truncated_decoder if opt.truncated_decoder \
                 else target_size
 
+            
             for j in range(0, target_size-1, trunc_size):
                 # (1) Create truncated target.
                 tgt = tgt[j: j + trunc_size]
 
                 # (2) F-prop all but generator.
-
+                
                 # Main training loop
                 model.zero_grad()
-                outputs, attn, dec_state = \
-                    model(src, tgt, src_lengths, dec_state)
 
-                # (2) F-prop/B-prob generator in shards for memory
-                # efficiency.
-                batch_stats = onmt.Loss.Statistics()
-                gen_state = closs.makeLossBatch(outputs, batch, attn,
-                                                (j, j + trunc_size))
-                for shard in splitter.splitIter(gen_state):
+                if not opt.reinforced:
+                    outputs, attn, dec_state = \
+                        model(src, tgt, src_lengths, dec_state)
 
-                    # Compute loss and backprop shard.
-                    loss, stats = closs.computeLoss(batch=batch,
-                                                    **shard)
-                    loss.div(batch.batch_size).backward()
-                    batch_stats.update(stats)
+                    # (2) F-prop/B-prob generator in shards for memory
+                    # efficiency.
+                    batch_stats = onmt.Loss.Statistics()
+                    gen_state = closs.makeLossBatch(outputs, batch, attn,
+                                                    (j, j + trunc_size))
+                    for shard in splitter.splitIter(gen_state):
 
+                        # Compute loss and backprop shard.
+                        loss, stats = closs.computeLoss(batch=batch,
+                                                        **shard)
+                        loss.div(batch.batch_size).backward()
+                        batch_stats.update(stats)
+
+                else:
+                    batch_stats, dec_state = model(src, tgt,
+                                                    dec_state)
+                    b = batch_stats
+                    print("batch stats: %d %d %.3f" % (b.n_correct, b.n_words, b.loss))
+                    print("batch loss/w: %.3f" % (batch_stats.loss/batch_stats.n_words))
+   
                 # (3) Update the parameters and statistics.
                 optim.step()
+                               
                 total_stats.update(batch_stats)
                 report_stats.update(batch_stats)
 
@@ -184,8 +214,7 @@ def train_model(model, train_data, valid_data, fields, optim):
 
         model_state_dict = (model.module.state_dict() if len(opt.gpuid) > 1
                             else model.state_dict())
-        model_state_dict = {k: v for k, v in model_state_dict.items()
-                            if 'generator' not in k}
+        model_state_dict = {k: v for k, v in model_state_dict.items()}
         generator_state_dict = (model.generator.module.state_dict()
                                 if len(opt.gpuid) > 1
                                 else model.generator.state_dict())

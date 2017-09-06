@@ -18,7 +18,7 @@ class Embeddings(nn.Module):
     Args:
         embedding_dim (int): size of the dictionary of embeddings.
         position_encoding (bool): use a sin to mark relative words positions.
-        feat_merge (string): merge action for the features embeddings:
+dec_state)        feat_merge (string): merge action for the features embeddings:
                     concat, sum or mlp.
         feat_dim_exponent (float): when using '-feat_merge concat', feature
                     embedding size is N^feat_dim_exponent, where N is the
@@ -474,11 +474,12 @@ class Decoder(nn.Module):
 
 
 class NMTModel(nn.Module):
-    def __init__(self, encoder, decoder, multigpu=False):
+    def __init__(self, encoder, decoder, generator=None, multigpu=False):
         self.multigpu = multigpu
         super(NMTModel, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
+        self.generator = generator
 
     def _fix_enc_hidden(self, h):
         """
@@ -489,15 +490,17 @@ class NMTModel(nn.Module):
             h = torch.cat([h[0:h.size(0):2], h[1:h.size(0):2]], 2)
         return h
 
-    def init_decoder_state(self, context, enc_hidden):
-        if self.decoder.decoder_type == "transformer":
+    def init_decoder_state(self, context, enc_hidden, input_feed=True):
+        if self.decoder.decoder_layer == "transformer":
             return TransformerDecoderState()
         elif isinstance(enc_hidden, tuple):
             dec = RNNDecoderState(tuple([self._fix_enc_hidden(enc_hidden[i])
                                          for i in range(len(enc_hidden))]))
         else:
             dec = RNNDecoderState(self._fix_enc_hidden(enc_hidden))
-        dec.init_input_feed(context, self.decoder.hidden_size)
+
+        if input_feed:
+            dec.init_input_feed(context, self.decoder.hidden_size)
         return dec
 
     def forward(self, src, tgt, lengths, dec_state=None):
@@ -534,10 +537,14 @@ class DecoderState(object):
 
     def repeatBeam_(self, beamSize):
         self._resetAll([Variable(e.data.repeat(1, beamSize, 1))
+                        if isinstance(e, Variable)
+                        else e
                         for e in self.all])
 
     def beamUpdate_(self, idx, positions, beamSize):
         for e in self.all:
+            if e is None:
+                continue
             a, br, d = e.size()
             sentStates = e.view(a, beamSize, br // beamSize, d)[:, :, idx]
             sentStates.data.copy_(
@@ -620,26 +627,36 @@ def make_base_model(opt, model_opt, fields, checkpoint=None):
         assert False, ("Unsupported model type %s"
                        % (model_opt.model_type))
 
-    # Make Decoder.
-    tgt_vocab = fields["tgt"].vocab
-    embeddings = build_embeddings(
-                    model_opt, tgt_vocab.stoi[onmt.IO.PAD_WORD],
-                    len(tgt_vocab), for_encoder=False)
-    decoder = onmt.Models.Decoder(model_opt, embeddings)
+    if not opt.reinforced:
+        # Make Decoder.
+        tgt_vocab = fields["tgt"].vocab
+        embeddings = build_embeddings(
+                        model_opt, tgt_vocab.stoi[onmt.IO.PAD_WORD],
+                        len(tgt_vocab), for_encoder=False)
+        
+        decoder = onmt.Models.Decoder(model_opt, embeddings)
 
-    # Make NMTModel(= Encoder + Decoder).
-    model = onmt.Models.NMTModel(encoder, decoder)
+        # Make NMTModel(= Encoder + Decoder).
+        model = onmt.Models.NMTModel(encoder, decoder)
 
-    # Make Generator.
-    if not model_opt.copy_attn:
-        generator = nn.Sequential(
-            nn.Linear(model_opt.rnn_size, len(fields["tgt"].vocab)),
-            nn.LogSoftmax())
-        if model_opt.share_decoder_embeddings:
-            generator[0].weight = decoder.embeddings.word_lut.weight
+        # Make Generator.
+        if not model_opt.copy_attn:
+            generator = nn.Sequential(
+                nn.Linear(model_opt.rnn_size, len(fields["tgt"].vocab)),
+                nn.LogSoftmax())
+            if model_opt.share_decoder_embeddings:
+                generator[0].weight = decoder.embeddings.word_lut.weight
+        else:
+            generator = onmt.modules.CopyGenerator(model_opt, fields["src"].vocab,
+                                                   fields["tgt"].vocab)
     else:
-        generator = onmt.modules.CopyGenerator(model_opt, fields["src"].vocab,
-                                               fields["tgt"].vocab)
+        # Make decoder, Model & "Generator"
+        decoder = onmt.Reinforced.ReinforcedDecoder(opt, encoder.embeddings)
+        model = onmt.Reinforced.ReinforcedModel(encoder, decoder)
+        class DummyGenerator(object):
+            def cuda(self):
+                pass
+        generator = DummyGenerator()
 
     if checkpoint is not None:
         print('Loading model')

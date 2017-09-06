@@ -8,7 +8,6 @@ from onmt.modules.Transformer import TransformerEncoder, TransformerDecoder
 from onmt.modules.MultiHeadedAttn import MultiHeadedAttention
 from onmt.modules.StackedRNN import StackedLSTM, StackedGRU
 
-
 # For flake8 compatibility.
 __all__ = [GlobalAttention, ImageEncoder, CopyGenerator, MultiHeadedAttention,
            LayerNorm, Bottle, BottleLinear, BottleLayerNorm, BottleSoftmax,

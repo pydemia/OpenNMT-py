@@ -168,7 +168,8 @@ def train_opts(parser):
                         help="Send logs to this crayon server.")
     parser.add_argument('-exp', type=str, default="",
                         help="Name of the experiment for logging.")
-
+    parser.add_argument('-reinforced', action="store_true",
+                        help="""WIP Use Reinforced model of Paulus 2017""")
 
 def preprocess_opts(parser):
     # Dictionary Options
