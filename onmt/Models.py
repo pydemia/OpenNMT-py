@@ -326,6 +326,7 @@ class Decoder(nn.Module):
                 opt.rnn_size, attn_type=opt.global_attention)
             self._copy = True
 
+
     def forward(self, input, src, context, state):
         """
         Forward through the decoder.
@@ -396,7 +397,6 @@ class Decoder(nn.Module):
 
             coverage = state.coverage.squeeze(0) \
                 if state.coverage is not None else None
-
             # Standard RNN decoder.
             for i, emb_t in enumerate(emb.split(1)):
                 emb_t = emb_t.squeeze(0)
@@ -406,6 +406,7 @@ class Decoder(nn.Module):
                 rnn_output, hidden = self.rnn(emb_t, hidden)
                 attn_output, attn = self.attn(rnn_output,
                                               context.transpose(0, 1))
+
                 if self.context_gate is not None:
                     output = self.context_gate(
                         emb_t, rnn_output, attn_output
@@ -413,6 +414,7 @@ class Decoder(nn.Module):
                     output = self.dropout(output)
                 else:
                     output = self.dropout(attn_output)
+
                 outputs += [output]
                 attns["std"] += [attn]
 
@@ -469,7 +471,6 @@ class Decoder(nn.Module):
                 outputs = self.dropout(attn_outputs)        # (t_len, batch, d)
             state = RNNDecoderState(hidden, outputs[-1].unsqueeze(0), None)
             attns["std"] = attn_scores
-
         return outputs, state, attns
 
 
@@ -491,7 +492,7 @@ class NMTModel(nn.Module):
         return h
 
     def init_decoder_state(self, context, enc_hidden, input_feed=True):
-        if self.decoder.decoder_layer == "transformer":
+        if self.decoder.decoder_type == "transformer":
             return TransformerDecoderState()
         elif isinstance(enc_hidden, tuple):
             dec = RNNDecoderState(tuple([self._fix_enc_hidden(enc_hidden[i])
@@ -627,7 +628,7 @@ def make_base_model(opt, model_opt, fields, checkpoint=None):
         assert False, ("Unsupported model type %s"
                        % (model_opt.model_type))
 
-    if not opt.reinforced:
+    if not model_opt.reinforced:
         # Make Decoder.
         tgt_vocab = fields["tgt"].vocab
         embeddings = build_embeddings(
@@ -651,9 +652,15 @@ def make_base_model(opt, model_opt, fields, checkpoint=None):
                                                    fields["tgt"].vocab)
     else:
         # Make decoder, Model & "Generator"
-        decoder = onmt.Reinforced.ReinforcedDecoder(opt, encoder.embeddings)
+        decoder = onmt.Reinforced.ReinforcedDecoder(model_opt, encoder.embeddings)
         model = onmt.Reinforced.ReinforcedModel(encoder, decoder)
         class DummyGenerator(object):
+            def eval(self):
+                pass
+            def load_state_dict(self, *args, **kwargs):
+                pass
+            def state_dict(self):
+                return None
             def cuda(self):
                 pass
         generator = DummyGenerator()

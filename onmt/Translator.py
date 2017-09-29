@@ -93,7 +93,7 @@ class Translator(object):
         _, src_lengths = batch.src
         src = onmt.IO.make_features(batch, 'src')
         encStates, context = self.model.encoder(src, src_lengths)
-        decStates = self.model.init_decoder_state(context, encStates)
+        decStates = self.model.init_decoder_state(context=context, enc_hidden=encStates)
 
         #  (1b) initialize for the decoder.
         def var(a): return Variable(a, volatile=True)
@@ -134,33 +134,41 @@ class Translator(object):
 
             # Temporary kludge solution to handle changed dim expectation
             # in the decoder
-            inp = inp.unsqueeze(2)
+            #TODO remove # , reinforced only
+            #inp = inp.unsqueeze(2)
 
             # Run one step.
-            decOut, decStates, attn = \
-                self.model.decoder(inp, src, context, decStates)
-            decOut = decOut.squeeze(0)
-            # decOut: beam x rnn_size
+            reinforce = True
+            if not reinforce:
+                decOut, decStates, attn = \
+                    self.model.decoder(inp, src, context, decStates)
+                decOut = decOut.squeeze(0)
+                # decOut: beam x rnn_size
 
-            # (b) Compute a vector of batch*beam word scores.
-            if not self.copy_attn:
-                out = self.model.generator.forward(decOut).data
-                out = unbottle(out)
-                # beam x tgt_vocab
+                # (b) Compute a vector of batch*beam word scores.
+                if not self.copy_attn:
+                    out = self.model.generator.forward(decOut).data
+                    out = unbottle(out)
+                    # beam x tgt_vocab
+                else:
+                    out = self.model.generator.forward(decOut,
+                                                       attn["copy"].squeeze(0),
+                                                       srcMap)
+                    # beam x (tgt_vocab + extra_vocab)
+                    out = dataset.collapse_copy_scores(
+                        unbottle(out.data),
+                        batch, self.fields["tgt"].vocab)
+                    # beam x tgt_vocab
+                    out = out.log()
             else:
-                out = self.model.generator.forward(decOut,
-                                                   attn["copy"].squeeze(0),
-                                                   srcMap)
-                # beam x (tgt_vocab + extra_vocab)
-                out = dataset.collapse_copy_scores(
-                    unbottle(out.data),
-                    batch, self.fields["tgt"].vocab)
-                # beam x tgt_vocab
-                out = out.log()
+                stats, dec_state, scores, attns = self.model.decoder(inp, src, context, decStates)
+                out = torch.stack(scores, dim=0).squeeze(0).contiguous()
+                attn = {"std": torch.stack(attns, dim=0).squeeze(0).contiguous()}
+                decStates = dec_state
 
             # (c) Advance each beam.
             for j, b in enumerate(beam):
-                b.advance(out[:, j],  unbottle(attn["std"]).data[:, j])
+                b.advance(unbottle(out).data[:, j],  unbottle(attn["std"]).data[:, j])
                 decStates.beamUpdate_(j, b.getCurrentOrigin(), beamSize)
 
         if "tgt" in batch.__dict__:

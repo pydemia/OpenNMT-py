@@ -144,7 +144,6 @@ class GlobalAttention(nn.Module):
         if self.mask is not None:
             mask_ = self.mask.view(batch, 1, sourceL)  # make it broardcastable
             align.data.masked_fill_(mask_, -float('inf'))
-
         # Softmax to normalize attention weights
         align_vectors = self.sm(align.view(batch*targetL, sourceL))
         align_vectors = align_vectors.view(batch, targetL, sourceL)
@@ -154,6 +153,7 @@ class GlobalAttention(nn.Module):
         c = torch.bmm(align_vectors, context)
 
         # concatenate
+        return c.squeeze(), align_vectors
         concat_c = torch.cat([c, input], 2).view(batch*targetL, dim*2)
         attn_h = self.linear_out(concat_c).view(batch, targetL, dim)
         if self.attn_type in ["general", "dot"]:

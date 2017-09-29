@@ -87,9 +87,10 @@ def eval_reinforce(model, data):
     model.eval()
     
     dec_hidden = None
-    for i in range(len(data)):
-        batch = data[i]
-        batch_stats, _ = model(batch, dec_hidden)
+    for batch in valid_data:
+        src = onmt.IO.make_features(batch, 'src')
+        tgt = onmt.IO.make_features(batch, 'tgt')
+        batch_stats, _ = model(src, tgt, dec_hidden)
         stats.update(batch_stats)
 
     model.train()
@@ -148,8 +149,8 @@ def train_model(model, train_data, valid_data, fields, optim):
                 
                 # Main training loop
                 model.zero_grad()
-
-                if not opt.reinforced:
+                
+                if not opt.reinforced: 
                     outputs, attn, dec_state = \
                         model(src, tgt, src_lengths, dec_state)
 
@@ -167,21 +168,20 @@ def train_model(model, train_data, valid_data, fields, optim):
                         batch_stats.update(stats)
 
                 else:
-                    batch_stats, dec_state = model(src, tgt,
-                                                    dec_state)
+                    #REINFORCE
+                    batch_stats,dec_state =  model(src, tgt, dec_state)
                     b = batch_stats
-                    print("batch stats: %d %d %.3f" % (b.n_correct, b.n_words, b.loss))
-                    print("batch loss/w: %.3f" % (batch_stats.loss/batch_stats.n_words))
    
                 # (3) Update the parameters and statistics.
                 optim.step()
                                
                 total_stats.update(batch_stats)
                 report_stats.update(batch_stats)
-
+                
+                #TODO hummm
                 # If truncated, don't backprop fully.
-                if dec_state is not None:
-                    dec_state.detach()
+                #if dec_state is not None:
+                #    dec_state.detach()
 
             if i % opt.report_every == -1 % opt.report_every:
                 report_stats.output(epoch, i+1, len(train),
@@ -291,6 +291,9 @@ def main():
     #     generator = nn.DataParallel(generator, device_ids=opt.gpuid, dim=0)
 
     if not opt.train_from:
+        #TODO maybe remove next two lines
+        for p in model.parameters():
+            p.data.normal_()
         if opt.param_init != 0.0:
             print('Intializing params')
             for p in model.parameters():
