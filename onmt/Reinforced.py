@@ -57,7 +57,6 @@ class IntraAttention(_Module):
         self.temporal = temporal
         self.W_attn = nn.Parameter(torch.randn(dim, dim))
         self.linear = nn.Linear(dim, dim, bias=False)
-        self.linear_out = nn.Linear(dim, dim, bias=False)
 
         self.softmax = nn.Softmax()
         self.tanh = nn.Tanh()
@@ -187,31 +186,22 @@ class MLCriterion(_Module):
         super(MLCriterion, self).__init__(opt)
         self.pad_id = pad_id
         self.vocab_size = vocab_size
-
-    def forward(self, p_gen, p_copy, p_switch, tgt, src):
+        
+    def scores(self, p_gen, p_copy, p_switch, src):
         """
         Args:
-            p_gen (FloatTensor): [bs*t x vocab_size]
-            p_copy (FloatTensor): [bs*t x src_length]
-            p_switch (FloatTensor): [bs*t]
-            tgt (FloatTensor): [bs*t]
-            src (LongTensor): [bs*t x src_length]
+            (see MLCriterion.foward)
 
         Returns:
-            loss (FloatTensor): [1]
-            pred (FloatTensor): [bs*t, 1]
-            stats (onmt.Loss.Statistics)
+            scores: [bs*t x c_vocab]
         """
+
         n, vocab_size = list(p_gen.size())
         _, src_l = list(p_copy.size())
 
         assert_size(p_copy, [n, src_l])
         assert_size(p_switch, [n])
-        assert_size(tgt, [n])
         assert_size(src, [n, src_l])
-
-        eps = 1e-12
-        non_padding = tgt.ne(self.pad_id)
 
         # Calculating scores, [bs*t x c_vocab], as in eq. (12)
         gen_scores = p_gen * (1-p_switch.view(-1, 1))
@@ -224,19 +214,41 @@ class MLCriterion(_Module):
 
         scores = copy_scores
         scores[:, :self.vocab_size] = scores[:, :self.vocab_size] + gen_scores
+        return scores
 
+    def forward(self, p_gen, p_copy, p_switch, tgt, src):
+        """
+        Args:
+            p_gen (FloatTensor): [bs*t x vocab_size]
+            p_copy (FloatTensor): [bs*t x src_length]
+            p_switch (FloatTensor): [bs*t]
+            tgt (FloatTensor): [bs*t]
+                or None
+            src (LongTensor): [bs*t x src_length]
 
-        # Calulating loss, as in eq. (14)
-        target_scores = scores.gather(1, tgt.view(-1, 1))
-        loss = torch.log(target_scores + eps) * non_padding.float()
-        loss = -loss.sum()/n
+        Returns:
+            loss (FloatTensor): [1]
+            pred (FloatTensor): [bs*t, 1]
+            stats (onmt.Loss.Statistics)
+                or None if tgt == None
+        """
+        scores = self.scores(p_gen, p_copy, p_switch, src)
+        n = scores.size(0)
 
         # Stats: prediction, #words, #correct_words
         pred_scores, pred = list(scores.max(1))
+        
+        eps = 1e-12
+        # Calulating loss, as in eq. (14)
+        non_padding = tgt.ne(self.pad_id)
+        target_scores = scores.gather(1, tgt.view(-1, 1))
+        loss = torch.log(target_scores + eps) * non_padding.float()
+        loss = -loss.sum()/n
+        
         n_words = non_padding.sum()
-        n_correct = pred.eq(tgt).masked_select(non_padding).sum()
-        stats = onmt.Loss.Statistics(loss.data[0], n_words.data[0], n_correct.data[0])
-
+        n_correct = pred.eq(tgt).masked_select(non_padding).sum().data[0]
+        
+        stats = onmt.Loss.Statistics(loss.data[0], n_words.data[0], n_correct)
         return loss, pred, stats
 
 
@@ -288,11 +300,11 @@ class ReinforcedDecoder(_Module):
         stats = onmt.Loss.Statistics()
         hidden = init_state.hidden
         loss, E_hist = None, None
+        scores, attns = [], []
         inputs_t = inputs[0, : ]
         for t in range(input_size):
             src_mask = src.eq(self.pad_id)
             emb_t = self.embeddings(inputs_t.view(1, -1, 1)).squeeze(0)
-            tgt_t = tgt[t, :].squeeze()
 
             hd_t, hidden = self.rnn(emb_t, hidden)
 
@@ -310,13 +322,19 @@ class ReinforcedDecoder(_Module):
                                                      c_e,
                                                      hd_t,
                                                      cd_t)
-                
-            loss_t, pred_t, stats_t = self.ml_crit(p_gen, p_copy, p_switch,
+            if tgt is not None:
+                tgt_t = tgt[t, :]
+                loss_t, pred_t, stats_t = self.ml_crit(p_gen, p_copy, p_switch,
                                                 tgt_t,
                                                 src)
 
-            stats.update(stats_t)
-            loss = loss + loss_t if loss is not None else loss_t
+                stats.update(stats_t)
+                loss = loss + loss_t if loss is not None else loss_t
+            else:
+                scores_t = self.ml_crit.scores(p_gen, p_copy, p_switch, src)
+                scores += [scores_t]
+                attns += [alpha_e]
+
             
             if t<input_size-1:
                 if self.training:
@@ -332,7 +350,7 @@ class ReinforcedDecoder(_Module):
             loss.backward()
 
         dec_state = onmt.Models.RNNDecoderState(hidden)
-        return stats, dec_state, None, None
+        return stats, dec_state, scores, attns
 
 
 class ReinforcedModel(onmt.Models.NMTModel):

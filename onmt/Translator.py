@@ -138,7 +138,7 @@ class Translator(object):
             #inp = inp.unsqueeze(2)
 
             # Run one step.
-            reinforce = True
+            reinforce = opt.reinforced
             if not reinforce:
                 decOut, decStates, attn = \
                     self.model.decoder(inp, src, context, decStates)
@@ -162,7 +162,8 @@ class Translator(object):
                     out = out.log()
             else:
                 stats, dec_state, scores, attns = self.model.decoder(inp, src, context, decStates)
-                out = torch.stack(scores, dim=0).squeeze(0).contiguous()
+                #out = torch.stack(scores, dim=0).squeeze(0).contiguous()
+
                 attn = {"std": torch.stack(attns, dim=0).squeeze(0).contiguous()}
                 decStates = dec_state
 

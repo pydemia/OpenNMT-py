@@ -661,6 +661,8 @@ def make_base_model(opt, model_opt, fields, checkpoint=None):
                 pass
             def state_dict(self):
                 return None
+            def cpu(self):
+                pass
             def cuda(self):
                 pass
         generator = DummyGenerator()
