@@ -1,17 +1,21 @@
 import argparse
 import copy
 import unittest
-import onmt
+
 import torch
-import opts
 from torch.autograd import Variable
 
+import onmt
+import opts
+from onmt.ModelConstructor import make_embeddings, \
+                            make_encoder, make_decoder
 
 parser = argparse.ArgumentParser(description='train.py')
 opts.model_opts(parser)
 opts.train_opts(parser)
 
-opt = parser.parse_known_args()[0]
+# -data option is required, but not used in this test, so dummy.
+opt = parser.parse_known_args(['-data', 'dummy'])[0]
 print(opt)
 
 
@@ -44,15 +48,15 @@ class TestModel(unittest.TestCase):
             sourceL: Length of generated input sentence
             bsize: Batchsize of generated input
         '''
-        vocab = self.get_vocab()
-        emb = onmt.Models.build_embeddings(opt, vocab.stoi[onmt.IO.PAD_WORD],
-                                           len(vocab), for_encoder=True)
+        word_dict = self.get_vocab()
+        feature_dicts = []
+        emb = make_embeddings(opt, word_dict, feature_dicts)
         test_src, _, __ = self.get_batch(sourceL=sourceL,
                                          bsize=bsize)
         if opt.decoder_type == 'transformer':
             input = torch.cat([test_src, test_src], 0)
             res = emb(input)
-            compare_to = torch.zeros(sourceL*2, bsize, opt.src_word_vec_size)
+            compare_to = torch.zeros(sourceL * 2, bsize, opt.src_word_vec_size)
         else:
             res = emb(test_src)
             compare_to = torch.zeros(sourceL, bsize, opt.src_word_vec_size)
@@ -68,13 +72,10 @@ class TestModel(unittest.TestCase):
             sourceL: Length of generated input sentence
             bsize: Batchsize of generated input
         '''
-        vocab = self.get_vocab()
-        embeddings = onmt.Models.build_embeddings(
-                                    opt, vocab.stoi[onmt.IO.PAD_WORD],
-                                    len(vocab), for_encoder=True)
-        enc = onmt.Models.Encoder(opt.encoder_type, opt.brnn,
-                                  opt.rnn_type, opt.enc_layers,
-                                  opt.rnn_size, opt.dropout, embeddings)
+        word_dict = self.get_vocab()
+        feature_dicts = []
+        embeddings = make_embeddings(opt, word_dict, feature_dicts)
+        enc = make_encoder(opt, embeddings)
 
         test_src, test_tgt, test_length = self.get_batch(sourceL=sourceL,
                                                          bsize=bsize)
@@ -103,17 +104,16 @@ class TestModel(unittest.TestCase):
             sourceL: length of input sequence
             bsize: batchsize
         """
-        vocab = self.get_vocab()
-        padding_idx = vocab.stoi[onmt.IO.PAD_WORD]
-        embeddings = onmt.Models.build_embeddings(opt, padding_idx, len(vocab),
-                                                  for_encoder=True)
-        enc = onmt.Models.Encoder(opt.encoder_type, opt.brnn,
-                                  opt.rnn_type, opt.enc_layers,
-                                  opt.rnn_size, opt.dropout,
-                                  embeddings)
-        embeddings = onmt.Models.build_embeddings(opt, padding_idx, len(vocab),
-                                                  for_encoder=False)
-        dec = onmt.Models.Decoder(opt, embeddings)
+        word_dict = self.get_vocab()
+        feature_dicts = []
+
+        embeddings = make_embeddings(opt, word_dict, feature_dicts)
+        enc = make_encoder(opt, embeddings)
+
+        embeddings = make_embeddings(opt, word_dict, feature_dicts,
+                                     for_encoder=False)
+        dec = make_decoder(opt, embeddings)
+
         model = onmt.Models.NMTModel(enc, dec)
 
         test_src, test_tgt, test_length = self.get_batch(sourceL=sourceL,
@@ -121,7 +121,7 @@ class TestModel(unittest.TestCase):
         outputs, attn, _ = model(test_src,
                                  test_tgt,
                                  test_length)
-        outputsize = torch.zeros(sourceL-1, bsize, opt.rnn_size)
+        outputsize = torch.zeros(sourceL - 1, bsize, opt.rnn_size)
         # Make sure that output has the correct size and type
         self.assertEqual(outputs.size(), outputsize.size())
         self.assertEqual(type(outputs), torch.autograd.Variable)
@@ -200,8 +200,15 @@ tests_ntmodel = [[('rnn_type', 'GRU')],
                  [('encoder_type', "brnn"),
                   ('brnn_merge', 'sum')],
                  [('encoder_type', "brnn")],
+                 [('decoder_type', 'cnn'),
+                  ('encoder_type', 'cnn')],
                  []
                  ]
+
+if onmt.modules.check_sru_requirement():
+    """ Only do SRU test if requirment is safisfied. """
+    # SRU doesn't support input_feed.
+    tests_ntmodel.append([('rnn_type', 'SRU'), ('input_feed', 0)])
 
 for p in tests_ntmodel:
     _add_test(p, 'ntmmodel_forward')

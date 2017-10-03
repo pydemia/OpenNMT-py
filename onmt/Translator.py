@@ -1,9 +1,12 @@
-import onmt
-import onmt.Models
-import onmt.modules
-import onmt.IO
 import torch
 from torch.autograd import Variable
+
+import onmt
+import onmt.Models
+import onmt.ModelConstructor
+import onmt.modules
+import onmt.IO
+from onmt.Utils import use_gpu
 
 
 class Translator(object):
@@ -22,8 +25,8 @@ class Translator(object):
         self._type = model_opt.encoder_type
         self.copy_attn = model_opt.copy_attn
 
-        self.model = onmt.Models.make_base_model(opt, model_opt, self.fields,
-                                                 checkpoint)
+        self.model = onmt.ModelConstructor.make_base_model(
+                            model_opt, self.fields, use_gpu(opt), checkpoint)
         self.model.eval()
         self.model.generator.eval()
 
@@ -64,17 +67,16 @@ class Translator(object):
 
         #  (1) run the encoder on the src
         encStates, context = self.model.encoder(src, src_lengths)
-        decStates = self.model.init_decoder_state(context, encStates)
+        decStates = self.model.decoder.init_decoder_state(
+                                        src, context, encStates)
 
         #  (2) if a target is specified, compute the 'goldScore'
         #  (i.e. log likelihood) of the target under the model
         tt = torch.cuda if self.opt.cuda else torch
         goldScores = tt.FloatTensor(batch.batch_size).fill_(0)
         decOut, decStates, attn = self.model.decoder(
-            tgt_in, src, context, decStates)
+            tgt_in, context, decStates)
 
-        # print(decOut.size(), batch.tgt[1:].data.size())
-        # aeq(decOut.size(), batch.tgt[1:].data.size())
         tgt_pad = self.fields["tgt"].vocab.stoi[onmt.IO.PAD_WORD]
         for dec, tgt in zip(decOut, batch.tgt[1:].data):
             # Log prob of each word.
@@ -86,38 +88,44 @@ class Translator(object):
         return goldScores
 
     def translateBatch(self, batch, dataset):
-        beamSize = self.opt.beam_size
-        batchSize = batch.batch_size
+        beam_size = self.opt.beam_size
+        batch_size = batch.batch_size
 
-        #  (1) run the encoder on the src
+        # (1) Run the encoder on the src.
         _, src_lengths = batch.src
         src = onmt.IO.make_features(batch, 'src')
         encStates, context = self.model.encoder(src, src_lengths)
-        decStates = self.model.init_decoder_state(context=context, enc_hidden=encStates)
+        decStates = self.model.decoder.init_decoder_state(
+                                        src, context, encStates)
 
-        #  (1b) initialize for the decoder.
+        #  (1b) Initialize for the decoder.
         def var(a): return Variable(a, volatile=True)
 
-        def rvar(a): return var(a.repeat(1, beamSize, 1))
+        def rvar(a): return var(a.repeat(1, beam_size, 1))
 
-        # Repeat everything beam_times
+        # Repeat everything beam_size times.
         context = rvar(context.data)
         src = rvar(src.data)
         srcMap = rvar(batch.src_map.data)
-        decStates.repeatBeam_(beamSize)
-        beam = [onmt.Beam(beamSize, n_best=self.opt.n_best, cuda=self.opt.cuda,
-                          vocab=self.fields["tgt"].vocab)
-                for __ in range(batchSize)]
+        decStates.repeat_beam_size_times(beam_size)
+        scorer = None
+        # scorer=onmt.GNMTGlobalScorer(0.3, 0.4)
+        beam = [onmt.Beam(beam_size, n_best=self.opt.n_best,
+                          cuda=self.opt.cuda,
+                          vocab=self.fields["tgt"].vocab,
+                          global_scorer=scorer)
+                for __ in range(batch_size)]
 
-        #  (2) run the decoder to generate sentences, using beam search\
+        # (2) run the decoder to generate sentences, using beam search.
 
         def bottle(m):
-            return m.view(batchSize * beamSize, -1)
+            return m.view(batch_size * beam_size, -1)
 
         def unbottle(m):
-            return m.view(beamSize, batchSize, -1)
+            return m.view(beam_size, batch_size, -1)
 
         for i in range(self.opt.max_sent_length):
+
             if all((b.done() for b in beam)):
                 break
 
@@ -141,7 +149,7 @@ class Translator(object):
             reinforce = opt.reinforced
             if not reinforce:
                 decOut, decStates, attn = \
-                    self.model.decoder(inp, src, context, decStates)
+                    self.model.decoder(inp, context, decStates)
                 decOut = decOut.squeeze(0)
                 # decOut: beam x rnn_size
 
@@ -150,16 +158,6 @@ class Translator(object):
                     out = self.model.generator.forward(decOut).data
                     out = unbottle(out)
                     # beam x tgt_vocab
-                else:
-                    out = self.model.generator.forward(decOut,
-                                                       attn["copy"].squeeze(0),
-                                                       srcMap)
-                    # beam x (tgt_vocab + extra_vocab)
-                    out = dataset.collapse_copy_scores(
-                        unbottle(out.data),
-                        batch, self.fields["tgt"].vocab)
-                    # beam x tgt_vocab
-                    out = out.log()
             else:
                 stats, dec_state, scores, attns = self.model.decoder(inp, src, context, decStates)
                 #out = torch.stack(scores, dim=0).squeeze(0).contiguous()
@@ -169,15 +167,17 @@ class Translator(object):
 
             # (c) Advance each beam.
             for j, b in enumerate(beam):
-                b.advance(unbottle(out).data[:, j],  unbottle(attn["std"]).data[:, j])
-                decStates.beamUpdate_(j, b.getCurrentOrigin(), beamSize)
+                #b.advance(unbottle(out).data[:, j],  unbottle(attn["std"]).data[:, j])
+                #decStates.beamUpdate_(j, b.getCurrentOrigin(), beamSize)
+                b.advance(out[:, j],  unbottle(attn["std"]).data[:, j])
+                decStates.beam_update(j, b.getCurrentOrigin(), beam_size)
 
         if "tgt" in batch.__dict__:
             allGold = self._runTarget(batch, dataset)
         else:
-            allGold = [0] * batchSize
+            allGold = [0] * batch_size
 
-        #  (3) package everything up
+        # (3) Package everything up.
         allHyps, allScores, allAttn = [], [], []
         for b in beam:
             n_best = self.opt.n_best
@@ -195,7 +195,7 @@ class Translator(object):
 
     def translate(self, batch, data):
         #  (1) convert words to indexes
-        batchSize = batch.batch_size
+        batch_size = batch.batch_size
 
         #  (2) translate
         pred, predScore, attn, goldScore = self.translateBatch(batch, data)
@@ -211,7 +211,7 @@ class Translator(object):
         src = batch.src[0].data.index_select(1, perm)
         if self.opt.tgt:
             tgt = batch.tgt.data.index_select(1, perm)
-        for b in range(batchSize):
+        for b in range(batch_size):
             src_vocab = data.src_vocabs[inds[b]]
             predBatch.append(
                 [self.buildTargetTokens(pred[b][n], src[:, b],

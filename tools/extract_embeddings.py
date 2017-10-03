@@ -1,10 +1,10 @@
 from __future__ import division
 
-import onmt
 import torch
 import argparse
 
-import onmt.Models
+from onmt.ModelConstructor import make_embeddings, \
+                            make_encoder, make_decoder
 
 parser = argparse.ArgumentParser(description='translate.py')
 
@@ -35,18 +35,15 @@ def main():
     model_opt = checkpoint['opt']
     src_dict = checkpoint['dicts']['src']
     tgt_dict = checkpoint['dicts']['tgt']
+    feature_dicts = []
 
-    embeddings = onmt.Models.build_embeddings(
-                model_opt, src_dict.stoi[onmt.IO.PAD_WORD],
-                len(src_dict), for_encoder=True)
-    encoder = onmt.Models.Encoder(model_opt.encoder_type, model_opt.brnn,
-                                  model_opt.rnn_type, model_opt.enc_layers,
-                                  model_opt.rnn_size, model_opt.dropout,
-                                  embeddings)
-    embeddings = onmt.Models.build_embeddings(
-                model_opt, tgt_dict.stoi[onmt.IO.PAD_WORD],
-                len(tgt_dict), for_encoder=False)
-    decoder = onmt.Models.Decoder(model_opt, embeddings)
+    embeddings = make_embeddings(model_opt, src_dict, feature_dicts)
+    encoder = make_encoder(model_opt, embeddings)
+
+    embeddings = make_embeddings(model_opt, tgt_dict, feature_dicts,
+                                 for_encoder=False)
+    decoder = make_decoder(model_opt, embeddings)
+
     encoder_embeddings = encoder.word_lut.weight.data.tolist()
     decoder_embeddings = decoder.word_lut.weight.data.tolist()
 

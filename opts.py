@@ -1,4 +1,5 @@
 import argparse
+from onmt.modules.SRU import CheckSRU
 
 
 def model_opts(parser):
@@ -17,16 +18,17 @@ def model_opts(parser):
     parser.add_argument('-tgt_word_vec_size', type=int, default=500,
                         help='Tgt word embedding sizes')
 
-    parser.add_argument('-feat_vec_size', type=int, default=20,
-                        help="""When using -feat_merge mlp, feature embedding
-                        sizes will be set to this.""")
     parser.add_argument('-feat_merge', type=str, default='concat',
                         choices=['concat', 'sum', 'mlp'],
                         help='Merge action for the features embeddings')
+    parser.add_argument('-feat_vec_size', type=int, default=-1,
+                        help="""If specified, feature embedding sizes
+                        will be set to this. Otherwise, feat_vec_exponent
+                        will be used.""")
     parser.add_argument('-feat_vec_exponent', type=float, default=0.7,
-                        help="""When using -feat_merge concat, feature embedding
-                        sizes will be set to N^feat_vec_exponent where N is the
-                        number of values the feature takes.""")
+                        help="""If -feat_merge_size is not set, feature
+                        embedding sizes will be set to N^feat_vec_exponent
+                        where N is the number of values the feature takes.""")
     parser.add_argument('-position_encoding', action='store_true',
                         help='Use a sin to mark relative words positions.')
     parser.add_argument('-share_decoder_embeddings', action='store_true',
@@ -34,10 +36,10 @@ def model_opts(parser):
 
     # RNN Options
     parser.add_argument('-encoder_type', type=str, default='rnn',
-                        choices=['rnn', 'brnn', 'mean', 'transformer'],
+                        choices=['rnn', 'brnn', 'mean', 'transformer', 'cnn'],
                         help="""Type of encoder layer to use.""")
     parser.add_argument('-decoder_type', type=str, default='rnn',
-                        choices=['rnn', 'transformer'],
+                        choices=['rnn', 'transformer', 'cnn'],
                         help='Type of decoder layer to use.')
 
     parser.add_argument('-layers', type=int, default=-1,
@@ -47,19 +49,25 @@ def model_opts(parser):
     parser.add_argument('-dec_layers', type=int, default=2,
                         help='Number of layers in the decoder')
 
+    parser.add_argument('-cnn_kernel_width', type=int, default=3,
+                        help="""Size of windows in the cnn, the kernel_size is
+                         (cnn_kernel_width, 1) in conv layer""")
+
     parser.add_argument('-rnn_size', type=int, default=500,
                         help='Size of LSTM hidden states')
     parser.add_argument('-input_feed', type=int, default=1,
                         help="""Feed the context vector at each time step as
                         additional input (via concatenation with the word
                         embeddings) to the decoder.""")
+
     parser.add_argument('-rnn_type', type=str, default='LSTM',
-                        choices=['LSTM', 'GRU'],
+                        choices=['LSTM', 'GRU', 'SRU'],
+                        action=CheckSRU,
                         help="""The gate type to use in the RNNs""")
     # parser.add_argument('-residual',   action="store_true",
     #                     help="Add residual connections between RNN layers.")
 
-    parser.add_argument('-brnn',   action="store_true",
+    parser.add_argument('-brnn', action="store_true",
                         help="Deprecated, use `encoder_type`.")
     parser.add_argument('-brnn_merge', default='concat',
                         choices=['concat', 'sum'],
@@ -88,6 +96,11 @@ def model_opts(parser):
 
 
 def train_opts(parser):
+    # Model loading/saving options
+    parser.add_argument('-data', required=True,
+                        help="""Path prefix to the ".train.pt" and
+                        ".valid.pt" file path from preprocess.py""")
+
     parser.add_argument('-save_model', default='model',
                         help="""Model filename (the model will be saved as
                         <save_model>_epochN_PPL.pt where PPL is the
@@ -119,6 +132,13 @@ def train_opts(parser):
                         help="""If a valid path is specified, then this will load
                         pretrained word embeddings on the decoder side.
                         See README for specific formatting instructions.""")
+    # Fixed word vectors
+    parser.add_argument('-fix_word_vecs_enc',
+                        action='store_true',
+                        help="Fix word embeddings on the encoder side.")
+    parser.add_argument('-fix_word_vecs_dec',
+                        action='store_true',
+                        help="Fix word embeddings on the encoder side.")
 
     # Optimization options
     parser.add_argument('-batch_size', type=int, default=64,
@@ -226,7 +246,7 @@ class MarkdownHelpFormatter(argparse.HelpFormatter):
 
     def _format_usage(self, usage, actions, groups, prefix):
         usage_text = super(MarkdownHelpFormatter, self)._format_usage(
-                usage, actions, groups, prefix)
+            usage, actions, groups, prefix)
         return '\n```\n%s\n```\n\n' % usage_text
 
     def format_help(self):
@@ -255,11 +275,11 @@ class MarkdownHelpAction(argparse.Action):
                  dest=argparse.SUPPRESS, default=argparse.SUPPRESS,
                  **kwargs):
         super(MarkdownHelpAction, self).__init__(
-                option_strings=option_strings,
-                dest=dest,
-                default=default,
-                nargs=0,
-                **kwargs)
+            option_strings=option_strings,
+            dest=dest,
+            default=default,
+            nargs=0,
+            **kwargs)
 
     def __call__(self, parser, namespace, values, option_string=None):
         parser.formatter_class = MarkdownHelpFormatter
