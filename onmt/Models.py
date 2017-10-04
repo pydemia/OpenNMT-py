@@ -396,7 +396,6 @@ class NMTModel(nn.Module):
         super(NMTModel, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
-        self.generator = generator
 
     def forward(self, src, tgt, lengths, dec_state=None):
         """
@@ -444,6 +443,7 @@ class DecoderState(object):
     def beam_update(self, idx, positions, beam_size):
         """ Update when beam advances. """
         for e in self._all:
+            if e is None: continue
             a, br, d = e.size()
             sentStates = e.view(a, beam_size, br // beam_size, d)[:, :, idx]
             sentStates.data.copy_(

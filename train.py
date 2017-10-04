@@ -108,7 +108,10 @@ def make_loss_compute(model, tgt_vocab, dataset, opt):
     compute loss in train/validate process. You can implement your
     own *LossCompute class, by subclassing LossComputeBase.
     """
-    if opt.copy_attn:
+    if opt.reinforced:
+        compute = onmt.Reinforced.EachStepGeneratorLossCompute(
+            model.generator, tgt_vocab, dataset, opt.copy_attn_force)
+    elif opt.copy_attn:
         compute = onmt.modules.CopyGeneratorLossCompute(
             model.generator, tgt_vocab, dataset, opt.copy_attn_force)
     else:
@@ -135,9 +138,19 @@ def train_model(model, train_data, valid_data, fields, optim):
     trunc_size = opt.truncated_decoder  # Badly named...
     shard_size = opt.max_generator_batches
 
-    trainer = onmt.Trainer(model, train_iter, valid_iter,
-                           train_loss, valid_loss, optim,
-                           trunc_size, shard_size)
+    if not opt.reinforced:
+        trainer = onmt.Trainer(model, train_iter, valid_iter,
+                               train_loss, valid_loss, optim,
+                               trunc_size, shard_size)
+    else:
+        trainer = onmt.Reinforced.RTrainer(model,
+                                          train_iter,
+                                          valid_iter,
+                                          train_loss,
+                                          valid_loss,
+                                          optim,
+                                          trunc_size)
+
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         print('')

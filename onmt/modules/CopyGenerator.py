@@ -12,11 +12,10 @@ class CopyGenerator(nn.Module):
     Generator module that additionally considers copying
     words directly from the source.
     """
-    def __init__(self, opt, src_dict, tgt_dict):
+    def __init__(self, opt, tgt_dict):
         super(CopyGenerator, self).__init__()
         self.linear = nn.Linear(opt.rnn_size, len(tgt_dict))
         self.linear_copy = nn.Linear(opt.rnn_size, 1)
-        self.src_dict = src_dict
         self.tgt_dict = tgt_dict
 
     def forward(self, hidden, attn, src_map):

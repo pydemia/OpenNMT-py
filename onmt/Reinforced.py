@@ -10,6 +10,131 @@ from torch.autograd import Variable
 import onmt
 import onmt.modules
 import onmt.Models
+import onmt.Trainer
+import onmt.Loss
+
+from onmt.modules import CopyGeneratorLossCompute, CopyGenerator
+
+class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
+    def __init__(self, generator, tgt_vocab, dataset, force_copy, eps=1e-20):
+        super(EachStepGeneratorLossCompute, self).__init__(generator, tgt_vocab, dataset, force_copy, eps)
+
+    def compute_loss(self, batch, output, target, copy_attn, align):
+        align = align.view(-1)
+        target = target.view(-1)
+
+        scores = self.generator(output,
+                                copy_attn,
+                                batch.src_map)
+        n = target.size(0)
+        loss = self.criterion(scores, align, target)
+        scores_data = scores.data.clone()
+        scores_data = self.dataset.collapse_copy_scores(
+                self.unbottle(scores_data, batch.batch_size),
+                batch, self.tgt_vocab)
+        scores_data = self.bottle(scores_data)
+
+
+        # Correct target is copy when only option.
+        # TODO: replace for loop with masking or boolean indexing
+        target_data = target.view(-1).data.clone()
+        for i in range(target_data.size(0)):
+            if target_data[i] == 0:
+                if align.data[i] != 0:
+                    target_data[i] = align.data[i] + len(self.tgt_vocab)
+
+        loss_data = loss.data.clone()
+        stats = self.stats(loss_data, scores_data, target_data)
+
+        _, pred = scores.max(1)
+
+        return loss, pred, stats
+
+
+class RTrainer(onmt.Trainer.Trainer):
+    """Special Trainer for the Reinforced Model
+       The loss is directly calculated in the decoder because
+       it needs to predict output at each time steps
+       the training process is therefore slightly different
+    """
+    def __init__(self, model, train_iter, valid_iter, train_loss, valid_loss, optim, trunc_size):
+        self.model = model
+        self.train_iter = train_iter
+        self.valid_iter = valid_iter
+        self.train_loss = train_loss
+        self.valid_loss = valid_loss
+        self.optim = optim
+        self.trunc_size = trunc_size
+
+        # Set model in training mode.
+        self.model.train()
+
+    def train(self, epoch, report_func=None):
+        total_stats = onmt.Statistics()
+        report_stats = onmt.Statistics()
+
+        for i, batch in enumerate(self.train_iter):
+            target_size = batch.tgt.size(0)
+            # Truncated BPTT
+            trunc_size = self.trunc_size if self.trunc_size else target_size
+
+            dec_state = None
+            _, src_lengths = batch.src
+
+            src = onmt.IO.make_features(batch, 'src')
+            tgt_outer = onmt.IO.make_features(batch, 'tgt')
+            report_stats.n_src_words += src_lengths.sum()
+            alignment = batch.alignment
+
+            for j in range(0, target_size-1, trunc_size):
+                # 1. Create truncated target.
+                tgt = tgt_outer[j: j + trunc_size]
+                batch.alignment = alignment[j + 1: j + trunc_size]
+
+                # 2. & 3. F-prop and compute loss
+                self.model.zero_grad()
+                batch_stats, dec_state = \
+                    self.model(src, tgt, src_lengths, batch, self.train_loss, dec_state)
+
+                # 4. Update the parameters and statistics.
+                self.optim.step()
+                total_stats.update(batch_stats)
+                report_stats.update(batch_stats)
+
+                # If truncated, don't backprop fully.
+                if dec_state is not None:
+                    dec_state.detach()
+
+            if report_func is not None:
+                report_func(epoch, i, len(self.train_iter),
+                            total_stats.start_time, self.optim.lr,
+                            report_stats)
+                report_stats = onmt.Statistics()
+
+        return total_stats
+
+    def validate(self):
+        """ Called for each epoch to validate. """
+        # Set model in validating mode.
+        self.model.eval()
+
+        stats = onmt.Statistics()
+
+        for batch in self.valid_iter:
+            _, src_lengths = batch.src
+            src = onmt.IO.make_features(batch, 'src')
+            tgt = onmt.IO.make_features(batch, 'tgt')
+
+            batch.alignment = batch.alignment[1:]
+            # F-prop through the model.
+            batch_stats, _ = self.model(src, tgt, src_lengths, batch, self.valid_loss)
+            # Update statistics.
+            stats.update(batch_stats)
+
+        # Set model back to training mode.
+        self.model.train()
+
+        return stats
 
 def nonan(variable, name):
     st = variable.data
@@ -87,26 +212,23 @@ class IntraAttention(_Module):
         return C_t, alpha
 
 
-class PointerGenerator(_Module):
-    def __init__(self, opt, embeddings):
-        super(PointerGenerator, self).__init__(opt)
-        self.pad_id = embeddings.padding_idx
-        W_emb = embeddings.word_lut.weight
-        self.W_emb = W_emb
-        
-        self.dim = dim = opt.rnn_size
+class PointerGenerator(CopyGenerator):
+    def __init__(self, opt, tgt_vocab, embeddings):
+        #TODO: use embeddings for out projection
+        # require PartiallySharedEmbeddings
+        super(PointerGenerator, self).__init__(opt, tgt_vocab)
+        self.input_size = opt.rnn_size*3
+        self.W_emb = embeddings.word_lut.weight
 
-        n_emb, emb_dim = list(W_emb.size())
+        self.linear = nn.Linear(self.input_size, len(tgt_vocab))
+        self.linear_copy = nn.Linear(self.input_size, 1)
+
+        n_emb, emb_dim = list(self.W_emb.size())
 
         # (2.4) Sharing decoder weights
-        self.W_proj = nn.Parameter(torch.Tensor(emb_dim, 3*dim))
-        self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
-
-        self.proj_u = nn.Linear(3*dim, 1)
-
+        #self.W_proj = nn.Parameter(torch.Tensor(emb_dim, self.input_size))
+        #self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
         self.tanh = nn.Tanh()
-        self.softmax = nn.Softmax()
-        self.sigmoid = nn.Sigmoid()
 
     @property
     def W_out(self):
@@ -117,7 +239,7 @@ class PointerGenerator(_Module):
         # eq. (13)
         return self.tanh(self.W_emb @ self.W_proj)
 
-    def proj_out(self, V):
+    def linear_shared_emb(self, V):
         """Calculate the output projection of `v` as in eq. (9)
             Args:
                 V (FloatTensor): [bs, 3*dim]
@@ -126,134 +248,9 @@ class PointerGenerator(_Module):
         """
         return (self.W_out @ V.t() + self.b_out).t()
 
-    def forward(self, ae_t, ce_t, hd_t, cd_t):
-        """
-        Implementing sect. 2.3: "Token generation and pointer"
-
-        Args:
-            ae_t: [b*t x src]
-            ce_t: [b*t x dim]
-            hd_t: [b*t x dim]
-            cd_t: [b*t x dim]
-        Returns:
-            p_gen: [bs*t x vocab_size]
-            p_copy: [bs*t x src_len]
-            p_switch: [bs*t]
-        """
-        dim = self.dim
-        n, src_len = list(ae_t.size())
-        assert_size(ae_t, [n, src_len])
-        assert_size(ce_t, [n, dim])
-        assert_size(hd_t, [n, dim])
-        assert_size(cd_t, [n, dim])
-        n_emb = self.W_emb.size(0)
-       
-        nonan(hd_t, "hd_t")
-        nonan(ce_t, "ce_t")
-        nonan(cd_t, "cd_t")
-
-
-        # [bs, 3*dim]
-        c_cat = torch.cat((hd_t, ce_t, cd_t), dim=1)
-        nonan(c_cat,"c_cat")
-        
-        # (9)
-        logits = self.proj_out(c_cat)
-        logits[:, self.pad_id] = -float('inf')
-        p_gen =  self.softmax(logits)
-
-        # (10)
-        p_copy = ae_t 
-
-        # (11), [bs]
-        p_switch = self.sigmoid(self.proj_u(c_cat)).squeeze(1) # [bs]
-
-        for name, var in {"gen":p_gen,"copy":p_copy, "switch": p_switch}.items():
-            nonan(var, name)
-
-        assert_size(p_switch, [n])
-        assert_size(p_gen, [n, n_emb])
-        assert_size(p_copy, [n, src_len])
-
-        return p_gen, p_copy, p_switch
-
-class MLCriterion(_Module):
-    """Maximum Likelihood as described in sect. 3.1, eq. (14)
-       based on pointer-generator results of sect. 2.3, eq. (12)
-
-    """
-    def __init__(self, vocab_size, opt, pad_id):
-        super(MLCriterion, self).__init__(opt)
-        self.pad_id = pad_id
-        self.vocab_size = vocab_size
-        
-    def scores(self, p_gen, p_copy, p_switch, src):
-        """
-        Args:
-            (see MLCriterion.foward)
-
-        Returns:
-            scores: [bs*t x c_vocab]
-        """
-
-        n, vocab_size = list(p_gen.size())
-        _, src_l = list(p_copy.size())
-
-        assert_size(p_copy, [n, src_l])
-        assert_size(p_switch, [n])
-        assert_size(src, [n, src_l])
-
-        # Calculating scores, [bs*t x c_vocab], as in eq. (12)
-        gen_scores = p_gen * (1-p_switch.view(-1, 1))
-
-        c_vocab_size =  max(src.max().data[0], self.vocab_size)
-        copy_scores = self.mkvar(torch.zeros(n, c_vocab_size))
-        copy_scores.scatter_add_(1, src, p_copy)
-        copy_scores[:, :self.vocab_size] = copy_scores[:, :self.vocab_size].clone() \
-                            * p_switch.view(-1,1).expand([n, self.vocab_size])
-
-        scores = copy_scores
-        scores[:, :self.vocab_size] = scores[:, :self.vocab_size] + gen_scores
-        return scores
-
-    def forward(self, p_gen, p_copy, p_switch, tgt, src):
-        """
-        Args:
-            p_gen (FloatTensor): [bs*t x vocab_size]
-            p_copy (FloatTensor): [bs*t x src_length]
-            p_switch (FloatTensor): [bs*t]
-            tgt (FloatTensor): [bs*t]
-                or None
-            src (LongTensor): [bs*t x src_length]
-
-        Returns:
-            loss (FloatTensor): [1]
-            pred (FloatTensor): [bs*t, 1]
-            stats (onmt.Loss.Statistics)
-                or None if tgt == None
-        """
-        scores = self.scores(p_gen, p_copy, p_switch, src)
-        n = scores.size(0)
-
-        # Stats: prediction, #words, #correct_words
-        pred_scores, pred = list(scores.max(1))
-        
-        eps = 1e-12
-        # Calulating loss, as in eq. (14)
-        non_padding = tgt.ne(self.pad_id)
-        target_scores = scores.gather(1, tgt.view(-1, 1))
-        loss = torch.log(target_scores + eps) * non_padding.float()
-        loss = -loss.sum()/n
-        
-        n_words = non_padding.sum()
-        n_correct = pred.eq(tgt).masked_select(non_padding).sum().data[0]
-        
-        stats = onmt.Loss.Statistics(loss.data[0], n_words.data[0], n_correct)
-        return loss, pred, stats
-
 
 class ReinforcedDecoder(_Module):
-    def __init__(self, opt, embeddings):
+    def __init__(self, opt, embeddings, bidirectional_encoder=False):
         super(ReinforcedDecoder, self).__init__(opt)
         self.embeddings = embeddings
         W_emb = embeddings.word_lut.weight
@@ -265,27 +262,50 @@ class ReinforcedDecoder(_Module):
         self.enc_attn = IntraAttention(opt, self.dim, temporal=True)
         self.dec_attn = IntraAttention(opt, self.dim)
 
-        self.pointer_generator = PointerGenerator(opt, embeddings)
-       
-        self.pad_id = embeddings.padding_idx 
+        self.pad_id = embeddings.word_padding_idx
         self.ml_crit = MLCriterion(self.tgt_vocab_size, opt, self.pad_id)
 
         # For compatibility reasons, TODO refactor
         self.hidden_size = self.dim
         self.decoder_type = "reinforced"
+        self.bidirectional_encoder = bidirectional_encoder
 
-    def forward(self, inputs, src, h_e, init_state, tgt=None):
+    def _fix_enc_hidden(self, h):
+        """
+        The encoder hidden is  (layers*directions) x batch x dim.
+        We need to convert it to layers x batch x (directions*dim).
+        """
+        if self.bidirectional_encoder:
+            h = torch.cat([h[0:h.size(0):2], h[1:h.size(0):2]], 2)
+        return h
+
+    def init_decoder_state(self, src, context, enc_hidden):
+        """
+        Args:
+            src: For compatibility reasons.......
+
+        """
+        if isinstance(enc_hidden, tuple):  # GRU
+            return onmt.Models.RNNDecoderState(context, self.hidden_size,
+                                   tuple([self._fix_enc_hidden(enc_hidden[i])
+                                         for i in range(len(enc_hidden))]))
+        else:  # LSTM
+            return onmt.Models.RNNDecoderState(context, self.hidden_size,
+                                   self._fix_enc_hidden(enc_hidden))
+
+    def forward(self, inputs, src, h_e, state, batch, loss_compute=None, tgt=None, generator=None):
         """
         Args:
             inputs (LongTensor): [tgt_len x bs]
             src (LongTensor): [src_len x bs x 1]
             h_e (FloatTensor): [src_len x bs x dim]
-            init_state: onmt.Models.DecoderState
+            state: onmt.Models.DecoderState
+            src_map: batch src (see IO)
             tgt (LongTensor): [tgt_len x bs]
 
         Returns:
-            stats: onmt.Loss.Statistics
-            dec_state onmt.Models.DecoderState
+            stats: onmt.Statistics
+            hidden
             None: TODO refactor
             None: TODO refactor
         """
@@ -294,11 +314,20 @@ class ReinforcedDecoder(_Module):
         input_size, _bs = list(inputs.size())
         assert bs == _bs
 
+        if self.training:
+            assert tgt is not None
+        if tgt is not None:
+            assert loss_compute is not None
+            if generator is not None:
+                print("[WARNING] Parameter 'generator' has been set in decoder but it won't be used")
+        else:
+            assert generator is not None
+
         # src as [bs x src_len]
         src = src.transpose(0, 1).squeeze(2)
 
-        stats = onmt.Loss.Statistics()
-        hidden = init_state.hidden
+        stats = onmt.Statistics()
+        hidden = state.hidden
         loss, E_hist = None, None
         scores, attns = [], []
         inputs_t = inputs[0, : ]
@@ -318,20 +347,16 @@ class ReinforcedDecoder(_Module):
                 cd_t, alpha_d = self.dec_attn(hd_t, hd_history)
                 hd_history = torch.cat([hd_history, hd_t.unsqueeze(0)], dim=0)
             
-            p_gen, p_copy, p_switch = self.pointer_generator(alpha_e,
-                                                     c_e,
-                                                     hd_t,
-                                                     cd_t)
             if tgt is not None:
                 tgt_t = tgt[t, :]
-                loss_t, pred_t, stats_t = self.ml_crit(p_gen, p_copy, p_switch,
-                                                tgt_t,
-                                                src)
+                output = torch.cat([hd_t, c_e, cd_t], dim=1)
+                loss_t, pred_t, stats_t = loss_compute(batch, output, tgt_t, copy_attn=alpha_e, align=batch.alignment[t, :].contiguous())
 
                 stats.update(stats_t)
                 loss = loss + loss_t if loss is not None else loss_t
             else:
-                scores_t = self.ml_crit.scores(p_gen, p_copy, p_switch, src)
+                output = torch.cat([hd_t, c_e, cd_t], dim=1)
+                scores_t = generator(output, alpha_e, batch.src_map)
                 scores += [scores_t]
                 attns += [alpha_e]
 
@@ -349,25 +374,15 @@ class ReinforcedDecoder(_Module):
         if self.training:
             loss.backward()
 
-        dec_state = onmt.Models.RNNDecoderState(hidden)
-        return stats, dec_state, scores, attns
+        state.update_state(hidden, None, None)
+        return stats, state, scores, attns
 
 
 class ReinforcedModel(onmt.Models.NMTModel):
     def __init__(self, encoder, decoder, multigpu=False):
         super(ReinforcedModel, self).__init__(encoder, decoder)
-        print("#PARAMS TOTAL: %d"
-                % nparams(self))
-        print({n: p.nelement() for n,p in self.named_parameters()})
-   
-    def init_decoder_state(self, enc_hidden, context=None):
-        state = super(ReinforcedModel, self).init_decoder_state(enc_hidden=enc_hidden,
-                                                    context=context,
-                                                    input_feed=True)
-        #temp_state = TemporalDecoderState(state.hidden, None)
-        return state #temp_state
 
-    def forward(self, src, tgt, dec_state=None):
+    def forward(self, src, tgt, src_lengths, batch, loss_compute, dec_state=None):
         """
         Args:
             src:
@@ -385,14 +400,33 @@ class ReinforcedModel(onmt.Models.NMTModel):
                                       Init hidden state
         """
         bs = src.size(1)
-        lengths = None
         n_feats = tgt.size(2)
         assert n_feats == 1, "Reinforced model does not handle features"
-        tgt.squeeze_(2)
-        enc_hidden, enc_out = self.encoder(src, lengths)  
+        tgt = tgt.squeeze(2)
+        enc_hidden, enc_out = self.encoder(src, src_lengths)
         
-        enc_state = self.init_decoder_state(enc_hidden=enc_hidden, context=enc_out)
-        init_state = enc_state if dec_state is None else dec_state
-        stats, dec_state, _, _ = self.decoder(tgt[:-1], src, enc_out, init_state, tgt=tgt[1:])
+        enc_state = self.decoder.init_decoder_state(src=None, enc_hidden=enc_hidden, context=enc_out)
+        state = enc_state if dec_state is None else dec_state
+        stats, hidden, _, _ = self.decoder(tgt[:-1], src, enc_out, state, batch, loss_compute, tgt=tgt[1:])
         
-        return stats, dec_state
+        return stats, state
+
+class DummyGenerator:
+    """Hacky way to ensure compatibility
+    """
+    def dummy_pass(self, *args, **kwargs):
+        pass
+    def __init__(self, *args, **kwargs):
+        self.state_dict = self.dummy_pass
+        self.cpu = self.dummy_pass
+        self.cuda = self.dummy_pass
+        self.__call__ = self.dummy_pass
+        self.load_state_dict = self.dummy_pass
+
+    def __getattr__(self, attr):
+        class DummyCallableObject:
+            def __init__(self, *args, **kwargs):
+                pass
+            def __call__(self, *args, **kwargs):
+                pass
+        return DummyCallableObject()

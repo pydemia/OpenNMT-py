@@ -21,6 +21,7 @@ class Translator(object):
         for arg in dummy_opt:
             if arg not in model_opt:
                 model_opt.__dict__[arg] = dummy_opt[arg]
+        self.model_opt = model_opt
 
         self._type = model_opt.encoder_type
         self.copy_attn = model_opt.copy_attn
@@ -146,7 +147,7 @@ class Translator(object):
             #inp = inp.unsqueeze(2)
 
             # Run one step.
-            reinforce = opt.reinforced
+            reinforce = self.model_opt.reinforced
             if not reinforce:
                 decOut, decStates, attn = \
                     self.model.decoder(inp, context, decStates)
@@ -159,9 +160,8 @@ class Translator(object):
                     out = unbottle(out)
                     # beam x tgt_vocab
             else:
-                stats, dec_state, scores, attns = self.model.decoder(inp, src, context, decStates)
-                #out = torch.stack(scores, dim=0).squeeze(0).contiguous()
-
+                stats, dec_state, scores, attns = self.model.decoder(inp, src, context, decStates, batch, generator=self.model.generator)
+                out = torch.stack(scores, dim=0).contiguous().data
                 attn = {"std": torch.stack(attns, dim=0).squeeze(0).contiguous()}
                 decStates = dec_state
 

@@ -87,6 +87,8 @@ def make_decoder(opt, embeddings):
                           opt.global_attention, opt.copy_attn,
                           opt.cnn_kernel_width, opt.dropout,
                           embeddings)
+    elif opt.reinforced:
+        return onmt.Reinforced.ReinforcedDecoder(opt, embeddings, bidirectional_encoder=opt.brnn)
     elif opt.input_feed:
         return InputFeedRNNDecoder(opt.rnn_type, opt.brnn,
                                    opt.dec_layers, opt.rnn_size,
@@ -138,23 +140,33 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     tgt_dict = fields["tgt"].vocab
     # TODO: prepare for a future where tgt features are possible.
     feature_dicts = []
-    tgt_embeddings = make_embeddings(model_opt, tgt_dict,
+
+    #TODO REINFORCED actually require partially shared embeddings
+    if model_opt.share_decoder_embeddings or model_opt.reinforced:
+        tgt_embeddings = src_embeddings
+    else:
+        tgt_embeddings = make_embeddings(model_opt, tgt_dict,
                                      feature_dicts, for_encoder=False)
     decoder = make_decoder(model_opt, tgt_embeddings)
 
     # Make NMTModel(= encoder + decoder).
-    model = NMTModel(encoder, decoder)
+    if not model_opt.reinforced:
+        model = NMTModel(encoder, decoder)
+    else:
+        model = onmt.Reinforced.ReinforcedModel(encoder, decoder)
 
     # Make Generator.
-    if not model_opt.copy_attn:
+    tgt_vocab = fields["tgt"].vocab
+    if model_opt.reinforced:
+        generator = onmt.Reinforced.PointerGenerator(model_opt, tgt_vocab, tgt_embeddings)
+    elif not model_opt.copy_attn:
         generator = nn.Sequential(
-            nn.Linear(model_opt.rnn_size, len(fields["tgt"].vocab)),
+            nn.Linear(model_opt.rnn_size, len(tgt_vocab)),
             nn.LogSoftmax())
         if model_opt.share_decoder_embeddings:
             generator[0].weight = decoder.embeddings.word_lut.weight
     else:
-        generator = CopyGenerator(model_opt, fields["src"].vocab,
-                                  fields["tgt"].vocab)
+        generator = CopyGenerator(model_opt, tgt_vocab)
 
     # Load the model states from checkpoint or initialize them.
     if checkpoint is not None:
