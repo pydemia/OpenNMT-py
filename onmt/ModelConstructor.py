@@ -12,7 +12,7 @@ from onmt.Models import NMTModel, MeanEncoder, RNNEncoder, \
                         StdRNNDecoder, InputFeedRNNDecoder
 from onmt.modules import Embeddings, ImageEncoder, CopyGenerator, \
                          TransformerEncoder, TransformerDecoder, \
-                         CNNEncoder, CNNDecoder
+                         CNNEncoder, CNNDecoder, PartialEmbedding
 
 
 def make_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
@@ -142,8 +142,10 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     feature_dicts = []
 
     #TODO REINFORCED actually require partially shared embeddings
-    if model_opt.share_decoder_embeddings or model_opt.reinforced:
+    if model_opt.share_decoder_embeddings:
         tgt_embeddings = src_embeddings
+    elif model_opt.reinforced:
+        tgt_embeddings = PartialEmbedding(len(tgt_dict), src_embeddings, tgt_dict.stoi[onmt.IO.PAD_WORD]) 
     else:
         tgt_embeddings = make_embeddings(model_opt, tgt_dict,
                                      feature_dicts, for_encoder=False)

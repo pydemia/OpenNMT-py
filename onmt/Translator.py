@@ -137,18 +137,16 @@ class Translator(object):
 
             # Turn any copied words to UNKs
             # 0 is unk
-            if self.copy_attn:
+            if self.copy_attn or self.model_opt.reinforced:
                 inp = inp.masked_fill(
                     inp.gt(len(self.fields["tgt"].vocab) - 1), 0)
-
-            # Temporary kludge solution to handle changed dim expectation
-            # in the decoder
-            #TODO remove # , reinforced only
-            #inp = inp.unsqueeze(2)
 
             # Run one step.
             reinforce = self.model_opt.reinforced
             if not reinforce:
+                # Temporary kludge solution to handle changed dim expectation
+                # in the decoder
+                inp = inp.unsqueeze(2)
                 decOut, decStates, attn = \
                     self.model.decoder(inp, context, decStates)
                 decOut = decOut.squeeze(0)
@@ -160,15 +158,22 @@ class Translator(object):
                     out = unbottle(out)
                     # beam x tgt_vocab
             else:
-                stats, dec_state, scores, attns = self.model.decoder(inp, src, context, decStates, batch, generator=self.model.generator)
-                out = torch.stack(scores, dim=0).contiguous().data
+                stats, dec_state, scores, attns = \
+                        self.model.decoder(inp,
+                                           src,
+                                           context,
+                                           decStates,
+                                           batch,
+                                           generator=self.model.generator)
+                
+                scores = scores[0]
+                scores_data = scores.data
+                out = unbottle(scores_data)
                 attn = {"std": torch.stack(attns, dim=0).squeeze(0).contiguous()}
                 decStates = dec_state
 
             # (c) Advance each beam.
             for j, b in enumerate(beam):
-                #b.advance(unbottle(out).data[:, j],  unbottle(attn["std"]).data[:, j])
-                #decStates.beamUpdate_(j, b.getCurrentOrigin(), beamSize)
                 b.advance(out[:, j],  unbottle(attn["std"]).data[:, j])
                 decStates.beam_update(j, b.getCurrentOrigin(), beam_size)
 

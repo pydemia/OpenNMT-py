@@ -109,6 +109,9 @@ class Embeddings(nn.Module):
             pe = PositionalEncoding(dropout, self.embedding_size)
             self.make_embedding.add_module('pe', pe)
 
+    @property 
+    def weight(self):
+        return self.word_lut.weight
     @property
     def word_lut(self):
         return self.make_embedding[0][0]
@@ -143,3 +146,63 @@ class Embeddings(nn.Module):
         aeq(emb_size, self.embedding_size)
 
         return emb
+
+class PartialEmbedding(nn.Embedding):
+    def __init__(self, partial_num_embeddings, embedding, padding_idx):
+        super(PartialEmbedding, self).__init__(partial_num_embeddings,
+                                        embedding.embedding_size,
+                                        padding_idx)
+        self.full_embedding = embedding
+        self.spe = nn.Parameter(torch.Tensor(4, embedding.embedding_size))
+
+    @property
+    def weight(self):
+        full_w = self.full_embedding.weight[:self.partial_num_embeddings, :]
+        w = torch.cat((self.spe, full_w[2:, :])).contiguous()
+
+        return w
+
+    @weight.setter
+    def weight(self, val):
+        """Partial Embedding does not have its own weight matrix
+        """
+        pass
+        
+    @property
+    def word_padding_idx(self):
+        return self.padding_idx
+    
+    @word_padding_idx.setter
+    def word_padding_idx(self, val):
+        self.padding_idx = val
+
+    def load_pretrained_vectors(self, emb_file, fixed):
+        """Nothing to do but loading the "full_embedding"
+        """
+        pass
+
+    def forward(self, input):
+        """
+        Return the embeddings for words
+        Args:
+            input (LongTensor): len x batch x nfeat
+        Return:
+            emb (FloatTensor): len x batch x self.embedding_size
+        Raise:
+            AssertionError if nfeat != 1
+        """
+        l, bs, nfeat = input.size()
+        assert nfeat == 1, "PartialEmbedding don't handle features"
+        
+        _input = input.squeeze(2).t()
+        _emb = super(PartialEmbedding, self).forward(_input)
+        emb = _emb.transpose(0, 1)
+
+        _l, _bs, _emb_size = emb.size()
+        assert l == _l
+        assert _bs == bs
+        assert _emb_size == self.embedding_dim
+
+        return emb
+
+

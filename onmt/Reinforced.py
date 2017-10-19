@@ -12,27 +12,73 @@ import onmt.modules
 import onmt.Models
 import onmt.Trainer
 import onmt.Loss
-
+import Profiler as prof
+from Profiler import timefunc, Timer
 from onmt.modules import CopyGeneratorLossCompute, CopyGenerator
+
 
 class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
     def __init__(self, generator, tgt_vocab, dataset, force_copy, eps=1e-20):
         super(EachStepGeneratorLossCompute, self).__init__(generator, tgt_vocab, dataset, force_copy, eps)
+        self.tgt_vocab = tgt_vocab
 
-    def compute_loss(self, batch, output, target, copy_attn, align):
+    def remove_oov(self, pred):
+        """Remove out-of-vocabulary tokens
+           usefull when we wants to use predictions (that contains oov due
+           to copy mechanisms) as next input.
+           i.e. pred[i] == 0 foreach i such as pred[i] > tgt_vocab_size
+        """
+        return pred.masked_fill_(pred.gt(len(self.tgt_vocab) - 1), 0)
+
+    def compute_loss(self, batch, output, target, copy_attn, align, src):
+        t = Timer("loss", prefix=prof.tabs(2), output=prof.DEVNULL)
         align = align.view(-1)
         target = target.view(-1)
 
         scores = self.generator(output,
                                 copy_attn,
                                 batch.src_map)
-        n = target.size(0)
+        t.chkpt("generator")
         loss = self.criterion(scores, align, target)
+        t.chkpt("criterion")
+
+
+        # Experimental:
+        # fast copy collapse, more efficient than dataset function
+        # for single target case (EachStep)
+        _src_map = batch.src_map.data.cuda()
+  
+        _src = src.clone().data
+        offset = len(self.tgt_vocab)
+        src_l, bs, c_vocab = _src_map.size()
+        # [bs x c_vocab]
+        _voc_src = _src.lt(offset) * _src.ne(0)
+        _copy_voc = _voc_src.view(bs, 1, src_l).float() \
+                    .bmm(_src_map.transpose(0,1)).squeeze()
+        _scores = scores.data.clone()
+        _copy_scores = _scores[:, offset:]
+        _copy_voc_scores = _copy_scores * _copy_voc
+        _copy_scores = _copy_scores * (1-_copy_voc)
+        _scores[:, offset:] = _copy_scores 
+
+        _tgt_voc_copy = _copy_voc_scores.view(bs, 1, -1) \
+                        .bmm(_src_map.transpose(0,1).transpose(1, 2)).squeeze()
+
+
+        _scores.scatter_add_(1, (_src*_voc_src.long())+2, _tgt_voc_copy)
+
+
+        """
         scores_data = scores.data.clone()
         scores_data = self.dataset.collapse_copy_scores(
                 self.unbottle(scores_data, batch.batch_size),
                 batch, self.tgt_vocab)
         scores_data = self.bottle(scores_data)
+        """
+        scores_data = _scores
+
+        t.chkpt("collapse_scores")
+
 
 
         # Correct target is copy when only option.
@@ -42,12 +88,15 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             if target_data[i] == 0:
                 if align.data[i] != 0:
                     target_data[i] = align.data[i] + len(self.tgt_vocab)
-
+        t.chkpt("fix_tgt")
         loss_data = loss.data.clone()
         stats = self.stats(loss_data, scores_data, target_data)
 
-        _, pred = scores.max(1)
+        _, pred = scores_data.max(1)
+        pred = torch.autograd.Variable(pred)
 
+        pred.cuda()
+        t.stop()
         return loss, pred, stats
 
 
@@ -214,56 +263,60 @@ class IntraAttention(_Module):
 
 class PointerGenerator(CopyGenerator):
     def __init__(self, opt, tgt_vocab, embeddings):
-        #TODO: use embeddings for out projection
-        # require PartiallySharedEmbeddings
         super(PointerGenerator, self).__init__(opt, tgt_vocab)
         self.input_size = opt.rnn_size*3
-        self.W_emb = embeddings.word_lut.weight
-
+        self.embeddings = embeddings
+        W_emb = embeddings.weight
+        #self.W_emb = W_emb
         self.linear = nn.Linear(self.input_size, len(tgt_vocab))
         self.linear_copy = nn.Linear(self.input_size, 1)
 
-        n_emb, emb_dim = list(self.W_emb.size())
+        n_emb, emb_dim = list(W_emb.size())
 
         # (2.4) Sharing decoder weights
         #self.W_proj = nn.Parameter(torch.Tensor(emb_dim, self.input_size))
-        #self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
+        #self.emb_proj = nn.Linear(emb_dim, self.input_size, bias=False)
+        self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
         self.tanh = nn.Tanh()
 
-    @property
-    def W_out(self):
+        self._W_out = None
+
+
+    def W_out(self, force=False):
         """ Sect. (2.4) Sharing decoder weights
             Returns:
                 W_out (FloaTensor): [n_emb, 3*dim]
         """
         # eq. (13)
-        return self.tanh(self.W_emb @ self.W_proj)
+        if self._W_out is None or force:
+            _ = self.emb_proj(self.embeddings.weight)
+            self._W_out = self.tanh(_)
+        return self._W_out
 
-    def linear_shared_emb(self, V):
+    def linear(self, V, force=False):
         """Calculate the output projection of `v` as in eq. (9)
             Args:
                 V (FloatTensor): [bs, 3*dim]
             Returns:
                 logits (FloatTensor): logits = W_out * V + b_out, [3*dim]
         """
-        return (self.W_out @ V.t() + self.b_out).t()
-
+        #W_out = self.tanh(self.W_emb @ self.W_proj)
+        return (self.W_out(force) @ V.t() + self.b_out).t()
 
 class ReinforcedDecoder(_Module):
     def __init__(self, opt, embeddings, bidirectional_encoder=False):
         super(ReinforcedDecoder, self).__init__(opt)
         self.embeddings = embeddings
-        W_emb = embeddings.word_lut.weight
+        W_emb = embeddings.weight
         self.tgt_vocab_size, self.input_size = W_emb.size()
         self.dim = opt.rnn_size
 
-        self.rnn = onmt.modules.StackedLSTM(opt.layers, self.input_size, opt.rnn_size, opt.dropout)
+        self.rnn = onmt.modules.StackedLSTM(1, self.input_size, self.dim, opt.dropout)
 
         self.enc_attn = IntraAttention(opt, self.dim, temporal=True)
         self.dec_attn = IntraAttention(opt, self.dim)
 
         self.pad_id = embeddings.word_padding_idx
-        self.ml_crit = MLCriterion(self.tgt_vocab_size, opt, self.pad_id)
 
         # For compatibility reasons, TODO refactor
         self.hidden_size = self.dim
@@ -309,12 +362,17 @@ class ReinforcedDecoder(_Module):
             None: TODO refactor
             None: TODO refactor
         """
+        no_dec_attn = False
+        run_profiler = False
+
+
         dim = self.dim
         src_len, bs, _ = list(src.size())
         input_size, _bs = list(inputs.size())
         assert bs == _bs
 
         if self.training:
+            loss_compute.generator.W_out(True)
             assert tgt is not None
         if tgt is not None:
             assert loss_compute is not None
@@ -324,33 +382,46 @@ class ReinforcedDecoder(_Module):
             assert generator is not None
 
         # src as [bs x src_len]
-        src = src.transpose(0, 1).squeeze(2)
+        src = src.transpose(0, 1).squeeze(2).contiguous()
 
         stats = onmt.Statistics()
         hidden = state.hidden
         loss, E_hist = None, None
-        scores, attns = [], []
+        scores, attns, dec_attns = [], [], []
+        preds = []
         inputs_t = inputs[0, : ]
+
+        devout_timer = prof.STDOUT if run_profiler else prof.DEVNULL
+        gtimer = Timer("global_decoder", output=devout_timer)
+        timer = Timer("decoder", output=devout_timer, prefix=prof.tabs())
         for t in range(input_size):
             src_mask = src.eq(self.pad_id)
             emb_t = self.embeddings(inputs_t.view(1, -1, 1)).squeeze(0)
-
             hd_t, hidden = self.rnn(emb_t, hidden)
-
+            timer.chkpt("encoder")
             c_e, alpha_e, E_hist = self.enc_attn(hd_t, h_e, E_history=E_hist)
-
-            if t==0:
+            if t==0 or no_dec_attn:
                 # no decoder intra attn at first step
                 cd_t = self.mkvar(torch.zeros([bs, dim]))
+                alpha_d = cd_t
                 hd_history = hd_t.unsqueeze(0)
             else:
                 cd_t, alpha_d = self.dec_attn(hd_t, hd_history)
                 hd_history = torch.cat([hd_history, hd_t.unsqueeze(0)], dim=0)
+
+            timer.chkpt("decoder")
             
             if tgt is not None:
                 tgt_t = tgt[t, :]
                 output = torch.cat([hd_t, c_e, cd_t], dim=1)
-                loss_t, pred_t, stats_t = loss_compute(batch, output, tgt_t, copy_attn=alpha_e, align=batch.alignment[t, :].contiguous())
+                loss_t, pred_t, stats_t = loss_compute(batch,
+                    output,
+                    tgt_t,
+                    copy_attn=alpha_e,
+                    align=batch.alignment[t, :].contiguous(),
+                    src=src)
+
+                preds += [pred_t]
 
                 stats.update(stats_t)
                 loss = loss + loss_t if loss is not None else loss_t
@@ -359,21 +430,26 @@ class ReinforcedDecoder(_Module):
                 scores_t = generator(output, alpha_e, batch.src_map)
                 scores += [scores_t]
                 attns += [alpha_e]
+                dec_attns += [alpha_d]
+            timer.chkpt("loss&pred")
 
-            
             if t<input_size-1:
                 if self.training:
                     # Exposure bias reduction by feeding predicted token
                     # with a 0.25 probability as mentionned in sect. 6.1:Setup
-                    exposure_mask = self.mkvar(torch.rand([bs]).lt(0.25)).long()
-                    inputs_t = exposure_mask * pred_t.long()
+                    _pred_t = preds[-1].clone()
+                    _pred_t = loss_compute.remove_oov(_pred_t)
+                    exposure_mask = self.mkvar(torch.rand([bs]).lt(0.25).long())
+                    inputs_t = exposure_mask * _pred_t.long()
                     inputs_t += (1-exposure_mask.float()).long() * inputs[t+1, :]
                 else:
                     inputs_t = inputs[t+1, :]
+            timer.chkpt("next_input")
+            gtimer.chkpt("step: %d" % t, append="\n")
 
         if self.training:
             loss.backward()
-
+        gtimer.stop("backward", append="\n")
         state.update_state(hidden, None, None)
         return stats, state, scores, attns
 

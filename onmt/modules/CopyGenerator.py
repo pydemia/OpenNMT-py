@@ -56,7 +56,6 @@ class CopyGeneratorCriterion(object):
 
     def __call__(self, scores, align, target):
         align = align.view(-1)
-
         # Copy prob.
         out = scores.gather(1, align.view(-1, 1) + self.offset) \
                     .view(-1).mul(align.ne(0).float())
@@ -101,6 +100,7 @@ class CopyGeneratorLossCompute(onmt.Loss.LossComputeBase):
         """
         target = target.view(-1)
         align = align.view(-1)
+        
         scores = self.generator(self.bottle(output),
                                 self.bottle(copy_attn),
                                 batch.src_map)
