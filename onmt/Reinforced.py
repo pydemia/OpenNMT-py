@@ -12,8 +12,8 @@ import onmt.modules
 import onmt.Models
 import onmt.Trainer
 import onmt.Loss
-import Profiler as prof
-from Profiler import timefunc, Timer
+import onmt.Profiler as prof
+from onmt.Profiler import timefunc, Timer
 from onmt.modules import CopyGeneratorLossCompute, CopyGenerator
 
 
@@ -386,8 +386,9 @@ class ReinforcedDecoder(_Module):
             None: TODO refactor
             None: TODO refactor
         """
-        no_dec_attn = False
-        run_profiler = False
+        # experimental parameters
+        no_dec_attn = False  # does not uses intradec attn if set
+        run_profiler = False # profiling (printing execution times)
 
 
         dim = self.dim
