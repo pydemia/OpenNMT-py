@@ -443,7 +443,8 @@ class DecoderState(object):
     def beam_update(self, idx, positions, beam_size):
         """ Update when beam advances. """
         for e in self._all:
-            if e is None: continue
+            if e is None:
+                continue
             a, br, d = e.size()
             sentStates = e.view(a, beam_size, br // beam_size, d)[:, :, idx]
             sentStates.data.copy_(

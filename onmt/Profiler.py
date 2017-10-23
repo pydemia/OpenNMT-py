@@ -2,8 +2,10 @@ import os
 import sys
 import time
 
-DEVNULL = open(os.devnull,"w")
+DEVNULL = open(os.devnull, "w")
 STDOUT = sys.stdout
+
+
 def timefunc(f):
     def f_timer(*args, **kwargs):
         start = time.time()
@@ -13,8 +15,10 @@ def timefunc(f):
         return result
     return f_timer
 
+
 def tabs(n=1):
     return "".join(["\t"]*n)
+
 
 class Timer:
     def __init__(self, name, start=True, output=sys.stdout, prefix=""):
@@ -43,19 +47,19 @@ class Timer:
         name = "%s:%d" % (self.name, self.chkpt_count)
         if chkpt_name is not None:
             name = "%s:%s" % (name, chkpt_name)
-        
+
         tot_time = ctime - self.stime
         if self.chkpt_count == 0:
             self.print("%s\ttime: %f" % (name, tot_time))
         else:
             chkpt_time = ctime - self.chkpt_time
-            self.print("%s\ttime: %f\t[tot: %f]" % (name, chkpt_time, tot_time))
+            self.print("%s\ttime: %f\t[tot: %f]" %
+                       (name, chkpt_time, tot_time))
 
         self.chkpt_time = ctime
         self.chkpt_count += 1
         if append is not None:
             self.print(str(append))
-        
 
     def stop(self, name="END", append=None):
         """Print and stop

@@ -165,11 +165,12 @@ class Translator(object):
                                            decStates,
                                            batch,
                                            generator=self.model.generator)
-                
+
                 scores = scores[0]
                 scores_data = scores.data
                 out = unbottle(scores_data)
-                attn = {"std": torch.stack(attns, dim=0).squeeze(0).contiguous()}
+                attn = {"std": torch.stack(attns, dim=0)
+                                    .squeeze(0).contiguous()}
                 decStates = dec_state
 
             # (c) Advance each beam.

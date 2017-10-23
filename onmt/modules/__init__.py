@@ -21,10 +21,10 @@ if can_use_sru:
 # For flake8 compatibility.
 __all__ = [GlobalAttention, ImageEncoder, CopyGenerator, MultiHeadedAttention,
            LayerNorm, Bottle, BottleLinear, BottleLayerNorm, BottleSoftmax,
-           TransformerEncoder, TransformerDecoder, Embeddings, PartialEmbedding, Elementwise,
+           TransformerEncoder, TransformerDecoder, Embeddings, Elementwise,
            MatrixTree, WeightNormConv2d, ConvMultiStepAttention,
            CNNEncoder, CNNDecoder, StackedLSTM, StackedGRU, ContextGateFactory,
-           CopyGeneratorLossCompute]
+           CopyGeneratorLossCompute, PartialEmbedding]
 
 if can_use_sru:
     __all__.extend([SRU, check_sru_requirement])

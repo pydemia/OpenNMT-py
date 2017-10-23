@@ -125,6 +125,7 @@ def make_loss_compute(model, tgt_vocab, dataset, opt):
     model.train()
     return stats
 
+
 def train_model(model, train_data, valid_data, fields, optim):
 
     train_iter = make_train_data_iter(train_data, opt)
@@ -144,13 +145,12 @@ def train_model(model, train_data, valid_data, fields, optim):
                                trunc_size, shard_size)
     else:
         trainer = onmt.Reinforced.RTrainer(model,
-                                          train_iter,
-                                          valid_iter,
-                                          train_loss,
-                                          valid_loss,
-                                          optim,
-                                          trunc_size)
-
+                                           train_iter,
+                                           valid_iter,
+                                           train_loss,
+                                           valid_loss,
+                                           optim,
+                                           trunc_size)
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         print('')

@@ -109,9 +109,10 @@ class Embeddings(nn.Module):
             pe = PositionalEncoding(dropout, self.embedding_size)
             self.make_embedding.add_module('pe', pe)
 
-    @property 
+    @property
     def weight(self):
         return self.word_lut.weight
+
     @property
     def word_lut(self):
         return self.make_embedding[0][0]
@@ -147,11 +148,12 @@ class Embeddings(nn.Module):
 
         return emb
 
+
 class PartialEmbedding(nn.Embedding):
     def __init__(self, partial_num_embeddings, embedding, padding_idx):
         super(PartialEmbedding, self).__init__(partial_num_embeddings,
-                                        embedding.embedding_size,
-                                        padding_idx)
+                                               embedding.embedding_size,
+                                               padding_idx)
         self.full_embedding = embedding
         self.spe = nn.Parameter(torch.Tensor(4, embedding.embedding_size))
 
@@ -167,11 +169,11 @@ class PartialEmbedding(nn.Embedding):
         """Partial Embedding does not have its own weight matrix
         """
         pass
-        
+
     @property
     def word_padding_idx(self):
         return self.padding_idx
-    
+
     @word_padding_idx.setter
     def word_padding_idx(self, val):
         self.padding_idx = val
@@ -193,7 +195,7 @@ class PartialEmbedding(nn.Embedding):
         """
         l, bs, nfeat = input.size()
         assert nfeat == 1, "PartialEmbedding don't handle features"
-        
+
         _input = input.squeeze(2).t()
         _emb = super(PartialEmbedding, self).forward(_input)
         emb = _emb.transpose(0, 1)
@@ -204,5 +206,3 @@ class PartialEmbedding(nn.Embedding):
         assert _emb_size == self.embedding_dim
 
         return emb
-
-

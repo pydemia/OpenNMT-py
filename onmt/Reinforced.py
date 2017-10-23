@@ -19,7 +19,8 @@ from onmt.modules import CopyGeneratorLossCompute, CopyGenerator
 
 class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
     def __init__(self, generator, tgt_vocab, dataset, force_copy, eps=1e-20):
-        super(EachStepGeneratorLossCompute, self).__init__(generator, tgt_vocab, dataset, force_copy, eps)
+        super(EachStepGeneratorLossCompute, self).__init__(
+            generator, tgt_vocab, dataset, force_copy, eps)
         self.tgt_vocab = tgt_vocab
 
     def remove_oov(self, pred):
@@ -42,10 +43,11 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         target = target.view(-1)
 
         # scores: [bs x vocab + c_vocab]
-        scores, switch_scores = self.generator(output,
-                                copy_attn,
-                                batch.src_map,
-                                return_switch=True)
+        scores, switch_scores = self.generator(
+                                    output,
+                                    copy_attn,
+                                    batch.src_map,
+                                    return_switch=True)
         t.chkpt("generator")
         loss = self.criterion(scores, align, target)
         t.chkpt("criterion")
@@ -62,7 +64,7 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         """
         _src_map = batch.src_map.float().data.cuda()
         _scores = scores.data.clone()
-  
+
         _src = src.clone().data
         offset = len(self.tgt_vocab)
         src_l, bs, c_vocab = _src_map.size()
@@ -99,8 +101,6 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
 
         t.chkpt("collapse_scores")
 
-
-
         # Correct target is copy when only option.
         # TODO: replace for loop with masking or boolean indexing
         target_data = target.view(-1).data.clone()
@@ -130,7 +130,8 @@ class RTrainer(onmt.Trainer.Trainer):
        it needs to predict output at each time steps
        the training process is therefore slightly different
     """
-    def __init__(self, model, train_iter, valid_iter, train_loss, valid_loss, optim, trunc_size):
+    def __init__(self, model, train_iter, valid_iter, train_loss,
+                 valid_loss, optim, trunc_size):
         self.model = model
         self.train_iter = train_iter
         self.valid_iter = valid_iter
@@ -166,8 +167,11 @@ class RTrainer(onmt.Trainer.Trainer):
 
                 # 2. & 3. F-prop and compute loss
                 self.model.zero_grad()
-                batch_stats, dec_state = \
-                    self.model(src, tgt, src_lengths, batch, self.train_loss, dec_state)
+                batch_stats, dec_state = self.model(src, tgt,
+                                                    src_lengths,
+                                                    batch,
+                                                    self.train_loss,
+                                                    dec_state)
 
                 # 4. Update the parameters and statistics.
                 self.optim.step()
@@ -200,7 +204,8 @@ class RTrainer(onmt.Trainer.Trainer):
 
             batch.alignment = batch.alignment[1:]
             # F-prop through the model.
-            batch_stats, _ = self.model(src, tgt, src_lengths, batch, self.valid_loss)
+            batch_stats, _ = self.model(
+                src, tgt, src_lengths, batch, self.valid_loss)
             # Update statistics.
             stats.update(batch_stats)
 
@@ -209,14 +214,17 @@ class RTrainer(onmt.Trainer.Trainer):
 
         return stats
 
+
 def nonan(variable, name):
     st = variable.data
-    if not (st != st).sum()==0:
+    if not (st != st).sum() == 0:
         print("NaN values in %s=%s" % (name, str(st)))
         exit()
 
+
 def nparams(_):
-  return sum([p.nelement() for p in _.parameters()])
+    return sum([p.nelement() for p in _.parameters()])
+
 
 class _Module(nn.Module):
     def __init__(self, opt):
@@ -231,7 +239,9 @@ class _Module(nn.Module):
         return o
 
     def mkvar(self, tensor, requires_grad=False):
-        return self.maybe_cuda(torch.autograd.Variable(tensor, requires_grad=requires_grad))
+        return self.maybe_cuda(
+            torch.autograd.Variable(tensor, requires_grad=requires_grad))
+
 
 def assert_size(v, size_list):
     """Check that variable(s) have size() == size_list
@@ -239,12 +249,14 @@ def assert_size(v, size_list):
     """
     if type(v) not in [tuple, list]:
         v = [v]
-        
+
     for variable in v:
         _friendly_aeq(real=list(variable.size()), expected=size_list)
 
+
 def _friendly_aeq(real, expected):
     assert real == expected, "got %s expected: %s" % (str(real), str(expected))
+
 
 class IntraAttention(_Module):
     """IntraAttention Module as in sect. (2)
@@ -256,7 +268,7 @@ class IntraAttention(_Module):
 
         self.softmax = nn.Softmax()
 
-    def forward(self, h_t, h, E_history=None, mask=None,debug=False):
+    def forward(self, h_t, h, E_history=None, mask=None, debug=False):
         """
         Args:
             h_t : [bs x dim]
@@ -269,8 +281,7 @@ class IntraAttention(_Module):
         """
         bs, dim = h_t.size()
         n, _bs, _dim = h.size()
-        assert (_bs, _dim)==(bs, dim)
-
+        assert (_bs, _dim) == (bs, dim)
 
         _h_t = self.linear(h_t).unsqueeze(1)
         _h = h.view(n, bs, dim)
@@ -291,11 +302,11 @@ class IntraAttention(_Module):
 
         # [bs, n]
         alpha = self.softmax(scores)
-        
+
         # [bs, 1, n] bmm [n, bs, dim] = [bs, 1, n]
         # [bs, dim, n] bmm [bs, n, 1] = [bs, dim, 1]
         # [bs, 1, n] bmm [bs, n, dim] = [bs, 1, dim]
-        C_t = alpha.unsqueeze(1).bmm(_h.transpose(0,1)).squeeze(1)
+        C_t = alpha.unsqueeze(1).bmm(_h.transpose(0, 1)).squeeze(1)
 
         if self.temporal:
             return C_t, alpha, E_history
@@ -312,12 +323,10 @@ class PointerGenerator(CopyGenerator):
         n_emb, emb_dim = list(W_emb.size())
 
         # (2.4) Sharing decoder weights
-        #self.W_proj = nn.Parameter(torch.Tensor(emb_dim, self.input_size))
         self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
         self.tanh = nn.Tanh()
 
         self._W_out = None
-
 
     def W_out(self, force=False):
         """ Sect. (2.4) Sharing decoder weights
@@ -342,8 +351,8 @@ class PointerGenerator(CopyGenerator):
             Returns:
                 logits (FloatTensor): logits = W_out * V + b_out, [3*dim]
         """
-        #W_out = self.tanh(self.W_emb @ self.W_proj)
         return (self.W_out(force) @ V.t() + self.b_out).t()
+
 
 class ReinforcedDecoder(_Module):
     def __init__(self, opt, embeddings, bidirectional_encoder=False):
@@ -353,7 +362,8 @@ class ReinforcedDecoder(_Module):
         self.tgt_vocab_size, self.input_size = W_emb.size()
         self.dim = opt.rnn_size
 
-        self.rnn = onmt.modules.StackedLSTM(1, self.input_size, self.dim, opt.dropout)
+        self.rnn = onmt.modules.StackedLSTM(1, self.input_size,
+                                            self.dim, opt.dropout)
 
         self.enc_attn = IntraAttention(opt, self.dim, temporal=True)
         self.dec_attn = IntraAttention(opt, self.dim)
@@ -381,14 +391,16 @@ class ReinforcedDecoder(_Module):
 
         """
         if isinstance(enc_hidden, tuple):  # GRU
-            return onmt.Models.RNNDecoderState(context, self.hidden_size,
-                                   tuple([self._fix_enc_hidden(enc_hidden[i])
-                                         for i in range(len(enc_hidden))]))
+            return onmt.Models.RNNDecoderState(
+                context, self.hidden_size,
+                tuple([self._fix_enc_hidden(enc_hidden[i])
+                       for i in range(len(enc_hidden))]))
         else:  # LSTM
-            return onmt.Models.RNNDecoderState(context, self.hidden_size,
-                                   self._fix_enc_hidden(enc_hidden))
+            return onmt.Models.RNNDecoderState(
+                context, self.hidden_size, self._fix_enc_hidden(enc_hidden))
 
-    def forward(self, inputs, src, h_e, state, batch, loss_compute=None, tgt=None, generator=None):
+    def forward(self, inputs, src, h_e, state, batch,
+                loss_compute=None, tgt=None, generator=None):
         """
         Args:
             inputs (LongTensor): [tgt_len x bs]
@@ -405,9 +417,8 @@ class ReinforcedDecoder(_Module):
             None: TODO refactor
         """
         # experimental parameters
-        no_dec_attn = False  # does not uses intradec attn if set
-        run_profiler = False # profiling (printing execution times)
-
+        no_dec_attn = False   # does not uses intradec attn if set
+        run_profiler = False  # profiling (printing execution times)
 
         dim = self.dim
         src_len, bs, _ = list(src.size())
@@ -420,7 +431,8 @@ class ReinforcedDecoder(_Module):
         if tgt is not None:
             assert loss_compute is not None
             if generator is not None:
-                print("[WARNING] Parameter 'generator' has been set in decoder but it won't be used")
+                print("[WARNING] Parameter 'generator' should not "
+                      + "be set at training time")
         else:
             assert generator is not None
 
@@ -432,18 +444,21 @@ class ReinforcedDecoder(_Module):
         loss, E_hist = None, None
         scores, attns, dec_attns, switchs, ipreds = [], [], [], [], []
         preds = []
-        inputs_t = inputs[0, : ]
+        inputs_t = inputs[0, :]
 
         devout_timer = prof.STDOUT if run_profiler else prof.DEVNULL
         gtimer = Timer("global_decoder", output=devout_timer)
         timer = Timer("decoder", output=devout_timer, prefix=prof.tabs())
         for t in range(input_size):
+            # Embedding & intra-temporal attention on source
             src_mask = src.eq(self.pad_id)
             emb_t = self.embeddings(inputs_t.view(1, -1, 1)).squeeze(0)
             hd_t, hidden = self.rnn(emb_t, hidden)
             timer.chkpt("encoder")
             c_e, alpha_e, E_hist = self.enc_attn(hd_t, h_e, E_history=E_hist)
-            if t==0 or no_dec_attn:
+
+            # Intra-decoder Attention
+            if t == 0 or no_dec_attn:
                 # no decoder intra attn at first step
                 cd_t = self.mkvar(torch.zeros([bs, dim]))
                 alpha_d = cd_t
@@ -453,11 +468,13 @@ class ReinforcedDecoder(_Module):
                 hd_history = torch.cat([hd_history, hd_t.unsqueeze(0)], dim=0)
 
             timer.chkpt("decoder")
-            
+
+            # Prediction - Computing Loss
             if tgt is not None:
                 tgt_t = tgt[t, :]
                 output = torch.cat([hd_t, c_e, cd_t], dim=1)
-                loss_t, pred_t, stats_t, switch_t, i_pred_t = loss_compute(batch,
+                loss_t, pred_t, stats_t, switch_t, i_pred_t = loss_compute(
+                    batch,
                     output,
                     tgt_t,
                     copy_attn=alpha_e,
@@ -471,6 +488,8 @@ class ReinforcedDecoder(_Module):
                 stats.update(stats_t)
                 loss = loss + loss_t if loss is not None else loss_t
             else:
+                # In translation case we just want scores
+                # prediction itself will be done with beam search
                 output = torch.cat([hd_t, c_e, cd_t], dim=1)
                 scores_t = generator(output, alpha_e, batch.src_map)
                 scores += [scores_t]
@@ -478,20 +497,23 @@ class ReinforcedDecoder(_Module):
                 dec_attns += [alpha_d]
             timer.chkpt("loss&pred")
 
-            if t<input_size-1:
+            if t < input_size - 1:
                 if self.training:
                     # Exposure bias reduction by feeding predicted token
                     # with a 0.25 probability as mentionned in sect. 6.1:Setup
                     _pred_t = preds[-1].clone()
                     _pred_t = loss_compute.remove_oov(_pred_t)
-                    exposure_mask = self.mkvar(torch.rand([bs]).lt(0.25).long())
+                    exposure_mask = self.mkvar(
+                        torch.rand([bs]).lt(0.25).long())
                     inputs_t = exposure_mask * _pred_t.long()
-                    inputs_t += (1-exposure_mask.float()).long() * inputs[t+1, :]
+                    inputs_t += (1 - exposure_mask.float()).long() \
+                                 * inputs[t+1, :]
                 else:
                     inputs_t = inputs[t+1, :]
             timer.chkpt("next_input")
             gtimer.chkpt("step: %d" % t, append="\n")
 
+        # backpropagation (& typical debug prints)
         if self.training:
             loss.backward()
             #print("inp/tgt/pred")
@@ -512,40 +534,37 @@ class ReinforcedModel(onmt.Models.NMTModel):
     def __init__(self, encoder, decoder, multigpu=False):
         super(ReinforcedModel, self).__init__(encoder, decoder)
 
-    def forward(self, src, tgt, src_lengths, batch, loss_compute, dec_state=None):
+    def forward(self, src, tgt, src_lengths, batch, loss_compute,
+                dec_state=None):
         """
         Args:
             src:
             tgt:
             dec_state: A decoder state object
-
-
-        Regular Model (for ref):
-            p_gen: (bs x vocab_size)
-            p_copy: (bs x src_len)
-            
-            ##outputs (FloatTensor): (len x batch x rnn_size) -- Decoder outputs.
-            ##attns (FloatTensor): Dictionary of (src_len x batch)
-            ##dec_hidden (FloatTensor): tuple (1 x batch x rnn_size)
-                                      Init hidden state
         """
         bs = src.size(1)
         n_feats = tgt.size(2)
         assert n_feats == 1, "Reinforced model does not handle features"
         tgt = tgt.squeeze(2)
         enc_hidden, enc_out = self.encoder(src, src_lengths)
-        
-        enc_state = self.decoder.init_decoder_state(src=None, enc_hidden=enc_hidden, context=enc_out)
+
+        enc_state = self.decoder.init_decoder_state(src=None,
+                                                    enc_hidden=enc_hidden,
+                                                    context=enc_out)
         state = enc_state if dec_state is None else dec_state
-        stats, hidden, _, _ = self.decoder(tgt[:-1], src, enc_out, state, batch, loss_compute, tgt=tgt[1:])
-        
+        stats, hidden, _, _ = self.decoder(tgt[:-1], src, enc_out,
+                                           state, batch, loss_compute,
+                                           tgt=tgt[1:])
+
         return stats, state
+
 
 class DummyGenerator:
     """Hacky way to ensure compatibility
     """
     def dummy_pass(self, *args, **kwargs):
         pass
+
     def __init__(self, *args, **kwargs):
         self.state_dict = self.dummy_pass
         self.cpu = self.dummy_pass
@@ -557,6 +576,8 @@ class DummyGenerator:
         class DummyCallableObject:
             def __init__(self, *args, **kwargs):
                 pass
+
             def __call__(self, *args, **kwargs):
                 pass
+
         return DummyCallableObject()

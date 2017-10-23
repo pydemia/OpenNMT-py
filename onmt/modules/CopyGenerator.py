@@ -104,7 +104,7 @@ class CopyGeneratorLossCompute(onmt.Loss.LossComputeBase):
         """
         target = target.view(-1)
         align = align.view(-1)
-        
+
         scores = self.generator(self.bottle(output),
                                 self.bottle(copy_attn),
                                 batch.src_map)

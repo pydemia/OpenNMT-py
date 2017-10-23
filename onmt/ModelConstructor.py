@@ -88,7 +88,8 @@ def make_decoder(opt, embeddings):
                           opt.cnn_kernel_width, opt.dropout,
                           embeddings)
     elif opt.reinforced:
-        return onmt.Reinforced.ReinforcedDecoder(opt, embeddings, bidirectional_encoder=opt.brnn)
+        return onmt.Reinforced.ReinforcedDecoder(
+            opt, embeddings, bidirectional_encoder=opt.brnn)
     elif opt.input_feed:
         return InputFeedRNNDecoder(opt.rnn_type, opt.brnn,
                                    opt.dec_layers, opt.rnn_size,
@@ -141,14 +142,16 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     # TODO: prepare for a future where tgt features are possible.
     feature_dicts = []
 
-    #TODO REINFORCED actually require partially shared embeddings
+    # TODO REINFORCED actually require partially shared embeddings
     if model_opt.share_decoder_embeddings:
         tgt_embeddings = src_embeddings
     elif model_opt.reinforced:
-        tgt_embeddings = PartialEmbedding(len(tgt_dict), src_embeddings, tgt_dict.stoi[onmt.IO.PAD_WORD]) 
+        tgt_embeddings = PartialEmbedding(len(tgt_dict),
+                                          src_embeddings,
+                                          tgt_dict.stoi[onmt.IO.PAD_WORD])
     else:
         tgt_embeddings = make_embeddings(model_opt, tgt_dict,
-                                     feature_dicts, for_encoder=False)
+                                         feature_dicts, for_encoder=False)
     decoder = make_decoder(model_opt, tgt_embeddings)
 
     # Make NMTModel(= encoder + decoder).
@@ -160,7 +163,9 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     # Make Generator.
     tgt_vocab = fields["tgt"].vocab
     if model_opt.reinforced:
-        generator = onmt.Reinforced.PointerGenerator(model_opt, tgt_vocab, tgt_embeddings)
+        generator = onmt.Reinforced.PointerGenerator(model_opt,
+                                                     tgt_vocab,
+                                                     tgt_embeddings)
     elif not model_opt.copy_attn:
         generator = nn.Sequential(
             nn.Linear(model_opt.rnn_size, len(tgt_vocab)),
