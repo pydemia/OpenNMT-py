@@ -265,6 +265,7 @@ class IntraAttention(_Module):
         super(IntraAttention, self).__init__(opt)
         self.dim = dim
         self.temporal = temporal
+        self.linear = nn.Linear(dim, dim, bias=False)
 
         self.softmax = nn.Softmax()
 
@@ -319,13 +320,14 @@ class PointerGenerator(CopyGenerator):
         self.input_size = opt.rnn_size*3
         self.embeddings = embeddings
         W_emb = embeddings.weight
+        self.linear_copy = nn.Linear(self.input_size, 1)
 
         n_emb, emb_dim = list(W_emb.size())
 
         # (2.4) Sharing decoder weights
+        self.emb_proj = nn.Linear(emb_dim, self.input_size, bias=False)
         self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
         self.tanh = nn.Tanh()
-
         self._W_out = None
 
     def W_out(self, force=False):
