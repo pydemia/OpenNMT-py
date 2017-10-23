@@ -18,7 +18,7 @@ class CopyGenerator(nn.Module):
         self.linear_copy = nn.Linear(opt.rnn_size, 1)
         self.tgt_dict = tgt_dict
 
-    def forward(self, hidden, attn, src_map):
+    def forward(self, hidden, attn, src_map, return_switch=False):
         """
         Computes p(w) = p(z=1) p_{copy}(w|z=0)  +  p(z=0) * p_{softmax}(w|z=0)
         """
@@ -44,7 +44,11 @@ class CopyGenerator(nn.Module):
                               .transpose(0, 1),
                               src_map.transpose(0, 1)).transpose(0, 1)
         copy_prob = copy_prob.contiguous().view(-1, cvocab)
-        return torch.cat([out_prob, copy_prob], 1)
+
+        scores = torch.cat([out_prob, copy_prob], 1)
+        if return_switch:
+            return scores, copy
+        return scores
 
 
 class CopyGeneratorCriterion(object):

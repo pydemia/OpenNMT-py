@@ -31,51 +31,71 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         return pred.masked_fill_(pred.gt(len(self.tgt_vocab) - 1), 0)
 
     def compute_loss(self, batch, output, target, copy_attn, align, src):
+        """
+            align:      [bs]
+            target:     [bs]
+            copy_attn:  [bs x src_len]
+            output:     [bs x 3*dim]
+        """
         t = Timer("loss", prefix=prof.tabs(2), output=prof.DEVNULL)
         align = align.view(-1)
         target = target.view(-1)
 
-        scores = self.generator(output,
+        # scores: [bs x vocab + c_vocab]
+        scores, switch_scores = self.generator(output,
                                 copy_attn,
-                                batch.src_map)
+                                batch.src_map,
+                                return_switch=True)
         t.chkpt("generator")
         loss = self.criterion(scores, align, target)
         t.chkpt("criterion")
 
+        _scores_incorrect = scores.data
 
         # Experimental:
-        # fast copy collapse, more efficient than dataset function
-        # for single target case (EachStep)
-        _src_map = batch.src_map.data.cuda()
+        # fast copy collapse:
+        # Dataset.collapse_copy_scores is very usefull in order
+        # to sum copy scores for tokens that are in vocabulary
+        # but using dataset.collapse_copy_scores at each step is
+        # inefficient.
+        # It seems incorrect tho...
+        """
+        _src_map = batch.src_map.float().data.cuda()
+        _scores = scores.data.clone()
   
         _src = src.clone().data
         offset = len(self.tgt_vocab)
         src_l, bs, c_vocab = _src_map.size()
-        # [bs x c_vocab]
-        _voc_src = _src.lt(offset) * _src.ne(0)
-        _copy_voc = _voc_src.view(bs, 1, src_l).float() \
-                    .bmm(_src_map.transpose(0,1)).squeeze()
-        _scores = scores.data.clone()
-        _copy_scores = _scores[:, offset:]
-        _copy_voc_scores = _copy_scores * _copy_voc
-        _copy_scores = _copy_scores * (1-_copy_voc)
-        _scores[:, offset:] = _copy_scores 
 
-        _tgt_voc_copy = _copy_voc_scores.view(bs, 1, -1) \
-                        .bmm(_src_map.transpose(0,1).transpose(1, 2)).squeeze()
+        # [bs x src_len], mask of src_idx being in tgt_vocab
+        src_invoc_mask = (_src.lt(offset) * _src.ne(1)).float()
+
+        # [bs x c_voc], mask of cvocab_idx related to invoc src token
+        cvoc_invoc_mask = src_invoc_mask.unsqueeze(1) \
+                                        .bmm(_src_map.transpose(0, 1)) \
+                                        .squeeze(1)
+
+        # [bs x src_len], copy scores of invoc src tokens
+        src_copy_scores = _scores[:, offset:].unsqueeze(1) \
+                                             .bmm(_src_map.transpose(0, 1) \
+                                                          .transpose(1, 2)) \
+                                             .squeeze()
+
+        # [bs x src_len], invoc src tokens, or 1 (=pad)
+        src_token_invoc = _src.clone().masked_fill_(1-src_invoc_mask.byte(), 1)
 
 
-        _scores.scatter_add_(1, (_src*_voc_src.long())+2, _tgt_voc_copy)
+        _scores.scatter_add_(1, src_token_invoc.long(), src_copy_scores)
+        _scores[:, offset:] *= cvoc_invoc_mask
 
-
+        scores_data = _scores
         """
+
         scores_data = scores.data.clone()
         scores_data = self.dataset.collapse_copy_scores(
                 self.unbottle(scores_data, batch.batch_size),
                 batch, self.tgt_vocab)
         scores_data = self.bottle(scores_data)
-        """
-        scores_data = _scores
 
         t.chkpt("collapse_scores")
 
@@ -95,9 +115,13 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         _, pred = scores_data.max(1)
         pred = torch.autograd.Variable(pred)
 
+        # for debugging purpose, it may be interesting to see prediction
+        # before "correcting" it
+        _, incorrect_pred = _scores_incorrect.max(1)
+
         pred.cuda()
         t.stop()
-        return loss, pred, stats
+        return loss, pred, stats, switch_scores, incorrect_pred
 
 
 class RTrainer(onmt.Trainer.Trainer):
@@ -387,7 +411,7 @@ class ReinforcedDecoder(_Module):
         stats = onmt.Statistics()
         hidden = state.hidden
         loss, E_hist = None, None
-        scores, attns, dec_attns = [], [], []
+        scores, attns, dec_attns, switchs, ipreds = [], [], [], [], []
         preds = []
         inputs_t = inputs[0, : ]
 
@@ -414,14 +438,16 @@ class ReinforcedDecoder(_Module):
             if tgt is not None:
                 tgt_t = tgt[t, :]
                 output = torch.cat([hd_t, c_e, cd_t], dim=1)
-                loss_t, pred_t, stats_t = loss_compute(batch,
+                loss_t, pred_t, stats_t, switch_t, i_pred_t = loss_compute(batch,
                     output,
                     tgt_t,
                     copy_attn=alpha_e,
                     align=batch.alignment[t, :].contiguous(),
                     src=src)
-
+                attns += [alpha_e]
+                switchs += [switch_t]
                 preds += [pred_t]
+                ipreds += [i_pred_t]
 
                 stats.update(stats_t)
                 loss = loss + loss_t if loss is not None else loss_t
@@ -449,6 +475,15 @@ class ReinforcedDecoder(_Module):
 
         if self.training:
             loss.backward()
+            #print("inp/tgt/pred")
+            pred0 = torch.stack(preds, 0)[:, 0]
+            ipred0 = torch.stack(ipreds, 0)[:, 0]
+            #print(torch.stack([inputs[:, 0], tgt[:, 0], pred0, ipred0], 1))
+            #print("copy")
+            #print(torch.stack(switchs, 0)[:, 0])
+            #print("attn")
+            #print(torch.stack(attns, 0)[:, 0, :])
+
         gtimer.stop("backward", append="\n")
         state.update_state(hidden, None, None)
         return stats, state, scores, attns
