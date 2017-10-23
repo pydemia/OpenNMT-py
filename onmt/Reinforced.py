@@ -308,15 +308,11 @@ class PointerGenerator(CopyGenerator):
         self.input_size = opt.rnn_size*3
         self.embeddings = embeddings
         W_emb = embeddings.weight
-        #self.W_emb = W_emb
-        self.linear = nn.Linear(self.input_size, len(tgt_vocab))
-        self.linear_copy = nn.Linear(self.input_size, 1)
 
         n_emb, emb_dim = list(W_emb.size())
 
         # (2.4) Sharing decoder weights
         #self.W_proj = nn.Parameter(torch.Tensor(emb_dim, self.input_size))
-        #self.emb_proj = nn.Linear(emb_dim, self.input_size, bias=False)
         self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
         self.tanh = nn.Tanh()
 
@@ -325,6 +321,11 @@ class PointerGenerator(CopyGenerator):
 
     def W_out(self, force=False):
         """ Sect. (2.4) Sharing decoder weights
+            The function returns the W_out matrix which is a projection of the
+            target embedding weight matrix. It needs to be updated after each
+            backward pass. It is done by running it with force=True which is
+            executed at each `ReinforcedDecoder.forward` call
+
             Returns:
                 W_out (FloaTensor): [n_emb, 3*dim]
         """
