@@ -253,13 +253,20 @@ class IntraAttention(_Module):
         super(IntraAttention, self).__init__(opt)
         self.dim = dim
         self.temporal = temporal
-        self.W_attn = nn.Parameter(torch.randn(dim, dim))
-        self.linear = nn.Linear(dim, dim, bias=False)
 
         self.softmax = nn.Softmax()
-        self.tanh = nn.Tanh()
 
     def forward(self, h_t, h, E_history=None, mask=None,debug=False):
+        """
+        Args:
+            h_t : [bs x dim]
+            h   : [n x bs x dim]
+            E_history: None or [(t-1) x bs x dim]
+        Returns:
+            C_t :  [bs x n]
+            alpha: [bs x dim]
+            E_history: [t x bs x n]
+        """
         bs, dim = h_t.size()
         n, _bs, _dim = h.size()
         assert (_bs, _dim)==(bs, dim)
@@ -268,12 +275,22 @@ class IntraAttention(_Module):
         _h_t = self.linear(h_t).unsqueeze(1)
         _h = h.view(n, bs, dim)
 
-        #[bs, 1, dim] x [n, bs, dim]
-        #=> [bs, 1, dim] bmm [bs, dim, n] = [bs, 1, n]
-        scores = _h_t.bmm(_h.transpose(0, 1).transpose(1, 2))
+        # e_t = [bs, 1, dim] bmm [bs, dim, n] = [bs, n] (after squeeze)
+        scores = _h_t.bmm(_h.transpose(0, 1).transpose(1, 2)).squeeze(1)
+
+        if self.temporal:
+            if E_history is None:
+                E_history = scores.unsqueeze(0)
+            else:
+                E_history = torch.cat([E_history, scores.unsqueeze(0)], 0)
+                # torch 0.2.0 only run softmax on dim=1 of 2D tensors
+                # we want to run temporal softmax (on dim=0) thus we view
+                # [t x bs x n] as [bs*n x t]
+                hist = E_history.view(-1, bs*n).t()
+                scores = self.softmax(hist)[:, -1].contiguous().view(bs, n)
 
         # [bs, n]
-        alpha = self.softmax(scores.squeeze(1))
+        alpha = self.softmax(scores)
         
         # [bs, 1, n] bmm [n, bs, dim] = [bs, 1, n]
         # [bs, dim, n] bmm [bs, n, 1] = [bs, dim, 1]
@@ -281,7 +298,7 @@ class IntraAttention(_Module):
         C_t = alpha.unsqueeze(1).bmm(_h.transpose(0,1)).squeeze(1)
 
         if self.temporal:
-            return C_t, alpha, None
+            return C_t, alpha, E_history
         return C_t, alpha
 
 
