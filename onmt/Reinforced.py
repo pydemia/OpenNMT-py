@@ -219,7 +219,7 @@ def nonan(variable, name):
     st = variable.data
     if not (st != st).sum() == 0:
         print("NaN values in %s=%s" % (name, str(st)))
-        exit()
+        raise ValueError()
 
 
 def nparams(_):
@@ -291,16 +291,22 @@ class IntraAttention(_Module):
         scores = _h_t.bmm(_h.transpose(0, 1).transpose(1, 2)).squeeze(1)
 
         if self.temporal:
+            next_E_history = None
+            pass
+            
             if E_history is None:
-                E_history = scores.unsqueeze(0)
+                next_E_history = scores.unsqueeze(0)
             else:
-                E_history = torch.cat([E_history, scores.unsqueeze(0)], 0)
+                next_E_history = torch.cat([E_history, scores.unsqueeze(0)], 0)
+                M = next_E_history.max(0)[0]
+                scores = (scores - M).exp() / (E_history - M).exp().sum(0)
+                
                 # torch 0.2.0 only run softmax on dim=1 of 2D tensors
                 # we want to run temporal softmax (on dim=0) thus we view
                 # [t x bs x n] as [bs*n x t]
-                hist = E_history.view(-1, bs*n).t()
-                scores = self.softmax(hist)[:, -1].contiguous().view(bs, n)
-
+                #hist = E_history.view(-1, bs*n).t()
+                #scores = self.softmax(hist)[:, -1].contiguous().view(bs, n)
+            
         # [bs, n]
         alpha = self.softmax(scores)
 
@@ -310,7 +316,7 @@ class IntraAttention(_Module):
         C_t = alpha.unsqueeze(1).bmm(_h.transpose(0, 1)).squeeze(1)
 
         if self.temporal:
-            return C_t, alpha, E_history
+            return C_t, alpha, next_E_history
         return C_t, alpha
 
 
@@ -444,7 +450,7 @@ class ReinforcedDecoder(_Module):
         stats = onmt.Statistics()
         hidden = state.hidden
         loss, E_hist = None, None
-        scores, attns, dec_attns, switchs, ipreds = [], [], [], [], []
+        scores, attns, dec_attns, switchs, ipreds, outputs = [], [], [], [], [], []
         preds = []
         inputs_t = inputs[0, :]
 
@@ -455,7 +461,16 @@ class ReinforcedDecoder(_Module):
             # Embedding & intra-temporal attention on source
             src_mask = src.eq(self.pad_id)
             emb_t = self.embeddings(inputs_t.view(1, -1, 1)).squeeze(0)
+            
+            
             hd_t, hidden = self.rnn(emb_t, hidden)
+            try:
+                nonan(hd_t, "hd_t")
+            except ValueError:
+                print(t)
+                print(hidden)
+                print(emb_t)
+            
             timer.chkpt("encoder")
             c_e, alpha_e, E_hist = self.enc_attn(hd_t, h_e, E_history=E_hist)
 
@@ -482,11 +497,23 @@ class ReinforcedDecoder(_Module):
                     copy_attn=alpha_e,
                     align=batch.alignment[t, :].contiguous(),
                     src=src)
+                outputs += [output]
                 attns += [alpha_e]
                 switchs += [switch_t]
                 preds += [pred_t]
                 ipreds += [i_pred_t]
-
+                
+                try:
+                    nonan(switch_t, "switch_t")
+                except ValueError:
+                    print("t=%d" % t)
+                    print("hd_t", hd_t)
+                    print("c_e", c_e)
+                    print("cd_t", cd_t)
+                    print("attn", alpha_e)
+                    print("pred", pred_t)
+                    print("switch", switch_t)
+                    exit()     
                 stats.update(stats_t)
                 loss = loss + loss_t if loss is not None else loss_t
             else:
@@ -518,7 +545,7 @@ class ReinforcedDecoder(_Module):
         # backpropagation (& typical debug prints)
         if self.training:
             loss.backward()
-            #print("inp/tgt/pred")
+            #print("inp/tgt/pred/ipred")
             pred0 = torch.stack(preds, 0)[:, 0]
             ipred0 = torch.stack(ipreds, 0)[:, 0]
             #print(torch.stack([inputs[:, 0], tgt[:, 0], pred0, ipred0], 1))
