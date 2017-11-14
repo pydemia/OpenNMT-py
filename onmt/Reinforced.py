@@ -38,6 +38,8 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             copy_attn:  [bs x src_len]
             output:     [bs x 3*dim]
         """
+        verbose = False
+        experimental_collapse = False
         t = Timer("loss", prefix=prof.tabs(2), output=prof.DEVNULL)
         align = align.view(-1)
         target = target.view(-1)
@@ -53,7 +55,6 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         t.chkpt("criterion")
 
         _scores_incorrect = scores.data
-        print(scores.size())
         # Experimental:
         # fast copy collapse:
         # Dataset.collapse_copy_scores is very usefull in order
@@ -61,56 +62,58 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         # but using dataset.collapse_copy_scores at each step is
         # inefficient.
         # It seems incorrect tho...
+        if experimental_collapse:
+            _src_map = batch.src_map.float().data.cuda()
+            _scores = scores.data.clone()
 
-        _src_map = batch.src_map.float().data.cuda()
-        _scores = scores.data.clone()
+            _src = src.clone().data
+            offset = len(self.tgt_vocab)
+            src_l, bs, c_vocab = _src_map.size()
 
-        _src = src.clone().data
-        offset = len(self.tgt_vocab)
-        src_l, bs, c_vocab = _src_map.size()
+            # [bs x src_len], mask of src_idx being in tgt_vocab
+            src_invoc_mask = (_src.lt(offset) * _src.gt(1)).float()
 
-        # [bs x src_len], mask of src_idx being in tgt_vocab
-        src_invoc_mask = (_src.lt(offset) * _src.gt(1)).float()
+            # [bs x c_voc], mask of cvocab_idx related to invoc src token
+            cvoc_invoc_mask = src_invoc_mask.unsqueeze(1) \
+                                            .bmm(_src_map.transpose(0, 1)) \
+                                            .squeeze(1) \
+                                            .gt(0)
 
-        # [bs x c_voc], mask of cvocab_idx related to invoc src token
-        cvoc_invoc_mask = src_invoc_mask.unsqueeze(1) \
-                                        .bmm(_src_map.transpose(0, 1)) \
-                                        .squeeze(1) \
-                                        .gt(0)
+            # [bs x src_len], copy scores of invoc src tokens
+            # [bs x 1 x cvocab] @bmm [bs x cvocab x src_len] = [bs x 1 x src_len]
+            src_copy_scores = _scores[:, offset:].unsqueeze(1) \
+                                                 .bmm(_src_map.transpose(0, 1) \
+                                                              .transpose(1, 2)) \
+                                                 .squeeze()
 
-        # [bs x src_len], copy scores of invoc src tokens
-        # [bs x 1 x cvocab] @bmm [bs x cvocab x src_len] = [bs x 1 x src_len]
-        src_copy_scores = _scores[:, offset:].unsqueeze(1) \
-                                             .bmm(_src_map.transpose(0, 1) \
-                                                          .transpose(1, 2)) \
-                                             .squeeze()
-
-        # [bs x src_len], invoc src tokens, or 1 (=pad)
-        src_token_invoc = _src.clone().masked_fill_(1-src_invoc_mask.byte(), -1) + 2
-
-        print("cvoc_invoc_mask", cvoc_invoc_mask.size(), cvoc_invoc_mask[0])
-        print("src_invoc_mask", src_invoc_mask.size(), src_invoc_mask[0])
-        print("src_token_invoc", src_token_invoc.size(), src_token_invoc[0])
-        print("src_copy_scores", src_copy_scores.size(), src_copy_scores[0]
-        print(_src_map.size())
-        print("src", src.size(), src[0])
-        print("tgt", target.size(), target[0])
-        print(src_copy_scores.size())
-        print(src_token_invoc.size())
+            # [bs x src_len], invoc src tokens, or 1 (=pad)
+            src_token_invoc = _src.clone().masked_fill_(1-src_invoc_mask.byte(), -1) + 2
+            
+            if verbose:
+                print("cvoc_invoc_mask", cvoc_invoc_mask.size(), cvoc_invoc_mask[0])
+                print("src_invoc_mask", src_invoc_mask.size(), src_invoc_mask[0])
+                print("src_token_invoc", src_token_invoc.size(), src_token_invoc[0])
+                print("src_copy_scores", src_copy_scores.size(), src_copy_scores[0])
+                print(_src_map.size())
+                print("src", src.size(), src[0])
+                print("tgt", target.size(), target[0])
+                print(src_copy_scores.size())
+                print(src_token_invoc.size())
+                
+            _scores.scatter_add_(1, src_token_invoc.long(), src_copy_scores)
+            _scores[:, offset:] *= (1-cvoc_invoc_mask.float())
+            _scores[:, 1] = 0
+            _scores_data = _scores
+            scores_data = _scores_data
+        else: 
+            scores_data = scores.data.clone()
+            scores_data = self.dataset.collapse_copy_scores(
+                    self.unbottle(scores_data, batch.batch_size),
+                    batch, self.tgt_vocab)
+            scores_data = self.bottle(scores_data)
         
-        _scores.scatter_add_(1, src_token_invoc.long(), src_copy_scores)
-        _scores[:, offset:] *= (1-cvoc_invoc_mask.float())
-        _scores[:, 1] = 0
-        _scores_data = _scores
-        
-        scores_data = scores.data.clone()
-        scores_data = self.dataset.collapse_copy_scores(
-                self.unbottle(scores_data, batch.batch_size),
-                batch, self.tgt_vocab)
-        scores_data = self.bottle(scores_data)
-        
-        print(scores_data.size())
-        print(torch.stack([scores[0], _scores_data[0], scores_data[0]], 1))
+        #print(scores_data.size())
+        #print(torch.stack([scores[0], _scores_data[0], scores_data[0]], 1))
         
                 
         t.chkpt("collapse_scores")
@@ -288,7 +291,7 @@ class IntraAttention(_Module):
         Args:
             h_t : [bs x dim]
             h   : [n x bs x dim]
-            E_history: None or [(t-1) x bs x dim]
+            E_history: None or [(t-1) x bs x n]
         Returns:
             C_t :  [bs x n]
             alpha: [bs x dim]
@@ -303,10 +306,9 @@ class IntraAttention(_Module):
 
         # e_t = [bs, 1, dim] bmm [bs, dim, n] = [bs, n] (after squeeze)
         scores = _h_t.bmm(_h.transpose(0, 1).transpose(1, 2)).squeeze(1)
-
-        if self.temporal:
-            next_E_history = None
-            pass
+        
+        next_E_history = None
+        if self.temporal and False:
             
             if E_history is None:
                 next_E_history = scores.unsqueeze(0)
