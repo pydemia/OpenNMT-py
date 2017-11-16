@@ -151,18 +151,66 @@ class Embeddings(nn.Module):
 
 class PartialEmbedding(nn.Embedding):
     def __init__(self, partial_num_embeddings, embedding, padding_idx):
+        self.partial_num_embeddings = partial_num_embeddings
+        self.nspe = 4
+        
         super(PartialEmbedding, self).__init__(partial_num_embeddings,
                                                embedding.embedding_size,
                                                padding_idx)
+        if self.nspe == 2:
+            self.spe = nn.Parameter(torch.Tensor(2, embedding.embedding_size))
+        elif self.nspe == 4:
+            self.spe = nn.Parameter(torch.Tensor(4, embedding.embedding_size))
+        else: 
+            raise ValueError("Incorrect value for nspe")
+        
         self.full_embedding = embedding
-        self.spe = nn.Parameter(torch.Tensor(4, embedding.embedding_size))
 
+        
     @property
     def weight(self):
-        full_w = self.full_embedding.weight[:self.partial_num_embeddings, :]
-        w = torch.cat((self.spe, full_w[2:, :])).contiguous()
+        return self._weight()
 
+    def _weight(self):
+        # The partial embeddings has `self.partial_num_embeddings` tokens 
+        # including 4 special tokens.
+        # source embeddings:
+        # [unk+bos+eos, pad, src#2, src#3, ..., src#{src_num_embeddings}]
+        # partial embeddings:
+        # [unk, pad, bos, eos, src#2, src#3, src#{partial_num_embeddings-2]
+    
+        w = None
+        try:
+            #print(self.partial_num_embeddings)
+
+            shared = self.full_embedding.weight[:self.partial_num_embeddings-2, :]
+           
+            
+            if self.nspe == 2:
+                # keep 2 first tokens -- and insert two others
+                w = torch.cat([shared[:2, :], self.spe, shared[2:, :] ]).contiguous()
+            elif self.nspe == 4:
+                # replace first tokens -- and add two <=> prepend with 4 tokens
+                w = torch.cat([self.spe, shared[2:, :]])
+            else:
+                raise ValueError("Incorrect value for nspe")
+            #print("part.embd.size: ", w.size())
+            return w
+        except AttributeError as e:
+            print(e)
+            import traceback
+            traceback.print_exc()
+        
+        def assert_size(var, sizes):
+            expected = "[%s]" % ", ".join(list(sizes))
+            actual = "[%s]" % ", ".join(list(var.size()))
+            assert list(var.size()) == list(sizes), "Incorrect size expected %s got %s" % (expected, actual)
+
+        assert_size(w, [self.partial_num_embeddings, self.embedding_size])
         return w
+
+    def reset_parameters(self):
+        pass
 
     @weight.setter
     def weight(self, val):
@@ -199,6 +247,17 @@ class PartialEmbedding(nn.Embedding):
         _input = input.squeeze(2).t()
         _emb = super(PartialEmbedding, self).forward(_input)
         emb = _emb.transpose(0, 1)
+
+        def nonan(variable):
+            st = variable.data
+            if not (st != st).sum() == 0:
+                print("NaN values emb")
+                print("inp: ", input)
+                print("emb: ", emb)
+                print("spe: ", self.spe)
+                print("full: ", self.full_embedding.weight)
+                raise ValueError()
+        nonan(emb)
 
         _l, _bs, _emb_size = emb.size()
         assert l == _l

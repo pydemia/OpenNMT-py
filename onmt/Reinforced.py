@@ -38,8 +38,11 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             copy_attn:  [bs x src_len]
             output:     [bs x 3*dim]
         """
-        verbose = False
-        experimental_collapse = False
+        
+        verbose = True and False
+        collapse = False or True
+        experimental_collapse = True and False
+
         t = Timer("loss", prefix=prof.tabs(2), output=prof.DEVNULL)
         align = align.view(-1)
         target = target.view(-1)
@@ -62,7 +65,7 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         # but using dataset.collapse_copy_scores at each step is
         # inefficient.
         # It seems incorrect tho...
-        if experimental_collapse:
+        if collapse and experimental_collapse:
             _src_map = batch.src_map.float().data.cuda()
             _scores = scores.data.clone()
 
@@ -105,13 +108,15 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             _scores[:, 1] = 0
             _scores_data = _scores
             scores_data = _scores_data
-        else: 
+        elif collapse:
             scores_data = scores.data.clone()
             scores_data = self.dataset.collapse_copy_scores(
                     self.unbottle(scores_data, batch.batch_size),
                     batch, self.tgt_vocab)
             scores_data = self.bottle(scores_data)
-        
+        else:
+            print("No collapse")
+            scores_data = scores.data.clone()
         #print(scores_data.size())
         #print(torch.stack([scores[0], _scores_data[0], scores_data[0]], 1))
         
@@ -135,6 +140,11 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         # for debugging purpose, it may be interesting to see prediction
         # before "correcting" it
         _, incorrect_pred = _scores_incorrect.max(1)
+        if verbose:
+            print(type(incorrect_pred), incorrect_pred.size())
+            print(type(pred.data), pred.size())
+            print(type(target.data), target.size())
+            print(torch.stack([incorrect_pred, pred.data, target.data], 1))
 
         pred.cuda()
         t.stop()
@@ -192,6 +202,12 @@ class RTrainer(onmt.Trainer.Trainer):
 
                 # 4. Update the parameters and statistics.
                 self.optim.step()
+                # print("RTrainer post-optim: ")
+                nonan(dec_state.hidden[0], "sth0")
+                nonan(dec_state.hidden[1], "sth1")
+                nonan(self.model.decoder.embeddings.weight, "emb_weight")
+                #nonan(self.model.decoder.embeddings.full_embedding.weight, "emb_weight")
+
                 total_stats.update(batch_stats)
                 report_stats.update(batch_stats)
 
@@ -308,15 +324,14 @@ class IntraAttention(_Module):
         scores = _h_t.bmm(_h.transpose(0, 1).transpose(1, 2)).squeeze(1)
         
         next_E_history = None
-        if self.temporal and False:
-            
+        if self.temporal:
             if E_history is None:
                 next_E_history = scores.unsqueeze(0)
             else:
                 next_E_history = torch.cat([E_history, scores.unsqueeze(0)], 0)
                 M = next_E_history.max(0)[0]
                 scores = (scores - M).exp() / (E_history - M).exp().sum(0)
-                
+                nonan(scores, "scores") 
                 # torch 0.2.0 only run softmax on dim=1 of 2D tensors
                 # we want to run temporal softmax (on dim=0) thus we view
                 # [t x bs x n] as [bs*n x t]
@@ -424,7 +439,8 @@ class ReinforcedDecoder(_Module):
                 context, self.hidden_size, self._fix_enc_hidden(enc_hidden))
 
     def forward(self, inputs, src, h_e, state, batch,
-                loss_compute=None, tgt=None, generator=None):
+                loss_compute=None, tgt=None, generator=None,
+                hd_history=None, E_hist=None, ret_hists=False):
         """
         Args:
             inputs (LongTensor): [tgt_len x bs]
@@ -440,6 +456,10 @@ class ReinforcedDecoder(_Module):
             None: TODO refactor
             None: TODO refactor
         """
+        #print("decoder call: ")
+        nonan(state.hidden[0], "sth0")
+        nonan(state.hidden[1], "sth1")
+        #nonan(self.embeddings.full_embedding.weight, "emb_weight")
         # experimental parameters
         no_dec_attn = False   # does not uses intradec attn if set
         run_profiler = False  # profiling (printing execution times)
@@ -465,7 +485,7 @@ class ReinforcedDecoder(_Module):
 
         stats = onmt.Statistics()
         hidden = state.hidden
-        loss, E_hist = None, None
+        loss = None
         scores, attns, dec_attns, switchs, ipreds, outputs = [], [], [], [], [], []
         preds = []
         inputs_t = inputs[0, :]
@@ -483,15 +503,17 @@ class ReinforcedDecoder(_Module):
             try:
                 nonan(hd_t, "hd_t")
             except ValueError:
-                print(t)
-                print(hidden)
-                print(emb_t)
+                print("timestep: ", t)
+                print("hidden: ", hidden)
+                print("embd: ", emb_t)
+                print("input_t: ", inputs_t)
+                print("whole inp: ", inputs)
             
             timer.chkpt("encoder")
             c_e, alpha_e, E_hist = self.enc_attn(hd_t, h_e, E_history=E_hist)
 
             # Intra-decoder Attention
-            if t == 0 or no_dec_attn:
+            if no_dec_attn or hd_history is None:
                 # no decoder intra attn at first step
                 cd_t = self.mkvar(torch.zeros([bs, dim]))
                 alpha_d = cd_t
@@ -520,7 +542,10 @@ class ReinforcedDecoder(_Module):
                 ipreds += [i_pred_t]
                 
                 try:
+                    nonan(alpha_e, "alpha_e")
                     nonan(switch_t, "switch_t")
+                    nonan(pred_t, "pred_t")
+                    nonan(output, "output")
                 except ValueError:
                     print("t=%d" % t)
                     print("hd_t", hd_t)
@@ -531,7 +556,7 @@ class ReinforcedDecoder(_Module):
                     print("switch", switch_t)
                     exit()     
                 stats.update(stats_t)
-                loss = loss + loss_t if loss is not None else loss_t
+                loss = loss + loss_t/bs if loss is not None else loss_t
             else:
                 # In translation case we just want scores
                 # prediction itself will be done with beam search
@@ -540,6 +565,10 @@ class ReinforcedDecoder(_Module):
                 scores += [scores_t]
                 attns += [alpha_e]
                 dec_attns += [alpha_d]
+
+                #_sort_tgt = torch.sort(inputs.data, 0)[1]
+                #print(torch.stack([scores_t.max(1)[1].data, _sort_tgt[t, :]], 1))
+
             timer.chkpt("loss&pred")
 
             if t < input_size - 1:
@@ -560,7 +589,15 @@ class ReinforcedDecoder(_Module):
 
         # backpropagation (& typical debug prints)
         if self.training:
+            # print("decoder call: ")
+            nonan(state.hidden[0], "sth0")
+            nonan(state.hidden[1], "sth1")
+            #nonan(self.embeddings.full_embedding.weight, "emb_weight")
             loss.backward()
+            # print("decoder post-bw: ")
+            nonan(state.hidden[0], "sth0")
+            nonan(state.hidden[1], "sth1")
+            #nonan(self.embeddings.full_embedding.weight, "emb_weight")
             #print("inp/tgt/pred/ipred")
             pred0 = torch.stack(preds, 0)[:, 0]
             ipred0 = torch.stack(ipreds, 0)[:, 0]
@@ -572,7 +609,9 @@ class ReinforcedDecoder(_Module):
 
         gtimer.stop("backward", append="\n")
         state.update_state(hidden, None, None)
-        return stats, state, scores, attns
+        if not ret_hists:
+            return stats, state, scores, attns    
+        return stats, state, scores, attns, hd_history, E_hist
 
 
 class ReinforcedModel(onmt.Models.NMTModel):

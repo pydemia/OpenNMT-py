@@ -50,6 +50,7 @@ class Translator(object):
             else:
                 tokens.append(copy_vocab.itos[tok - len(vocab)])
             if tokens[-1] == onmt.IO.EOS_WORD:
+                print(tokens, pred)
                 tokens = tokens[:-1]
                 break
 
@@ -125,6 +126,7 @@ class Translator(object):
         def unbottle(m):
             return m.view(beam_size, batch_size, -1)
 
+        hd_hist, E_hist = None, None
         for i in range(self.opt.max_sent_length):
 
             if all((b.done() for b in beam)):
@@ -158,17 +160,22 @@ class Translator(object):
                     out = unbottle(out)
                     # beam x tgt_vocab
             else:
-                stats, dec_state, scores, attns = \
+                stats, dec_state, scores, attns, hd_hist, E_hist = \
                         self.model.decoder(inp,
                                            src,
                                            context,
                                            decStates,
                                            batch,
-                                           generator=self.model.generator)
+                                           generator=self.model.generator,
+                                           hd_history=hd_hist,
+                                           E_hist=E_hist,
+                                           ret_hists=True)
 
                 scores = scores[0]
                 scores_data = scores.data
                 out = unbottle(scores_data)
+                out = dataset.collapse_copy_scores(
+                      out, batch, self.fields["tgt"].vocab)
                 attn = {"std": torch.stack(attns, dim=0)
                                     .squeeze(0).contiguous()}
                 decStates = dec_state
