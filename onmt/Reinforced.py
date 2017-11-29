@@ -38,12 +38,14 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             copy_attn:  [bs x src_len]
             output:     [bs x 3*dim]
         """
-        
-        verbose = True and False
-        collapse = False or True
-        experimental_collapse = True and False
+        verbose = False
+        collapse = True
+        experimental_collapse = True
+        collapse_both = False
+        profiler = False
 
-        t = Timer("loss", prefix=prof.tabs(2), output=prof.DEVNULL)
+        prof_out = prof.STDOUT if profiler else prof.DEVNULL
+        t = Timer("loss", prefix=prof.tabs(2), output=prof_out)
         align = align.view(-1)
         target = target.view(-1)
 
@@ -65,7 +67,7 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         # but using dataset.collapse_copy_scores at each step is
         # inefficient.
         # It seems incorrect tho...
-        if collapse and experimental_collapse:
+        if collapse and (collapse_both or experimental_collapse):
             _src_map = batch.src_map.float().data.cuda()
             _scores = scores.data.clone()
 
@@ -108,15 +110,23 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             _scores[:, 1] = 0
             _scores_data = _scores
             scores_data = _scores_data
-        elif collapse:
+
+        if False and collapse and (collapse_both or not experimental_collapse):
             scores_data = scores.data.clone()
             scores_data = self.dataset.collapse_copy_scores(
                     self.unbottle(scores_data, batch.batch_size),
                     batch, self.tgt_vocab)
             scores_data = self.bottle(scores_data)
-        else:
-            print("No collapse")
-            scores_data = scores.data.clone()
+
+        if collapse_both:
+            _s = list(_scores_data.size())
+            _t = _s[0] * _s[1]
+            _err = (_scores_data != scores_data).sum()
+            #print("collapse diff: %d %d %f" %  ((_err, _t, _err/_t)))
+            #print("collaspes: ", torch.stack([_scores_data[0], scores_data[0]], 1)[:50, :])
+            #print("collapse sums: ", _scores_data.sum(), scores_data.sum())
+            scores_data = _scores_data
+
         #print(scores_data.size())
         #print(torch.stack([scores[0], _scores_data[0], scores_data[0]], 1))
         
@@ -125,12 +135,19 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
 
         # Correct target is copy when only option.
         # TODO: replace for loop with masking or boolean indexing
-        target_data = target.view(-1).data.clone()
-        for i in range(target_data.size(0)):
-            if target_data[i] == 0:
-                if align.data[i] != 0:
-                    target_data[i] = align.data[i] + len(self.tgt_vocab)
+        
+        # old tgt correction
+        target_data = target.data.clone()
+        correct_mask = target_data.eq(0) * align.data.ne(0)
+        correct_copy = (align.data + len(self.tgt_vocab)) * correct_mask.long()
+        target_data = target_data + correct_copy
+        t.chkpt("fix_tgt2")
+
+        if verbose:
+            print("targets: ", torch.stack([target.data, target_data, _target_data ], 1))
         t.chkpt("fix_tgt")
+
+
         loss_data = loss.data.clone()
         stats = self.stats(loss_data, scores_data, target_data)
 
@@ -205,8 +222,9 @@ class RTrainer(onmt.Trainer.Trainer):
                 # print("RTrainer post-optim: ")
                 nonan(dec_state.hidden[0], "sth0")
                 nonan(dec_state.hidden[1], "sth1")
+                
+                nonan(self.model.decoder.embeddings.full_embedding.weight, "full_emb_weight")
                 nonan(self.model.decoder.embeddings.weight, "emb_weight")
-                #nonan(self.model.decoder.embeddings.full_embedding.weight, "emb_weight")
 
                 total_stats.update(batch_stats)
                 report_stats.update(batch_stats)
@@ -497,9 +515,11 @@ class ReinforcedDecoder(_Module):
             # Embedding & intra-temporal attention on source
             src_mask = src.eq(self.pad_id)
             emb_t = self.embeddings(inputs_t.view(1, -1, 1)).squeeze(0)
-            
+            timer.chkpt("embedding")
             
             hd_t, hidden = self.rnn(emb_t, hidden)
+            timer.chkpt("rnn    ")
+
             try:
                 nonan(hd_t, "hd_t")
             except ValueError:
@@ -509,8 +529,8 @@ class ReinforcedDecoder(_Module):
                 print("input_t: ", inputs_t)
                 print("whole inp: ", inputs)
             
-            timer.chkpt("encoder")
             c_e, alpha_e, E_hist = self.enc_attn(hd_t, h_e, E_history=E_hist)
+            timer.chkpt("encoder attn")
 
             # Intra-decoder Attention
             if no_dec_attn or hd_history is None:
@@ -522,7 +542,7 @@ class ReinforcedDecoder(_Module):
                 cd_t, alpha_d = self.dec_attn(hd_t, hd_history)
                 hd_history = torch.cat([hd_history, hd_t.unsqueeze(0)], dim=0)
 
-            timer.chkpt("decoder")
+            timer.chkpt("decoder attn")
 
             # Prediction - Computing Loss
             if tgt is not None:
@@ -556,7 +576,7 @@ class ReinforcedDecoder(_Module):
                     print("switch", switch_t)
                     exit()     
                 stats.update(stats_t)
-                loss = loss + loss_t/bs if loss is not None else loss_t
+                loss = loss + loss_t if loss is not None else loss_t
             else:
                 # In translation case we just want scores
                 # prediction itself will be done with beam search

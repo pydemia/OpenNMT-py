@@ -200,6 +200,7 @@ class PartialEmbedding(nn.Embedding):
             print(e)
             import traceback
             traceback.print_exc()
+            raise ValueError()
         
         def assert_size(var, sizes):
             expected = "[%s]" % ", ".join(list(sizes))
