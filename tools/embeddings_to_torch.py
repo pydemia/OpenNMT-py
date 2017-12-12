@@ -48,7 +48,7 @@ def get_embeddings(file):
 
 def match_embeddings(vocab, emb):
     dim = len(six.next(six.itervalues(emb)))
-    filtered_embeddings = np.zeros((len(vocab), dim))
+    filtered_embeddings = np.random.rand(len(vocab), dim)
     count = {"match": 0, "miss": 0}
     for w, w_id in vocab.stoi.items():
         if w in emb:
@@ -81,8 +81,8 @@ def main():
     print("\t* src: ", filtered_src_embeddings.size())
     print("\t* tgt: ", filtered_tgt_embeddings.size())
 
-    src_output_file = "%s.src" % opt.output_file
-    tgt_output_file = "%s.tgt" % opt.output_file
+    src_output_file = "%s.src.pt" % opt.output_file
+    tgt_output_file = "%s.tgt.pt" % opt.output_file
     print("\nSaving embedding as:\n\t* src: %s\n\t* tgt: %s" % (src_output_file, tgt_output_file))
     torch.save(filtered_src_embeddings, src_output_file)
     torch.save(filtered_tgt_embeddings, tgt_output_file)

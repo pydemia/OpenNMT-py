@@ -6,6 +6,11 @@ import torch.cuda
 import onmt
 from onmt.Utils import aeq
 
+def nonan(variable, name):
+    st = variable.data
+    if not (st != st).sum() == 0:
+        print("NaN values in %s=%s" % (name, str(st)))
+        raise ValueError()
 
 class CopyGenerator(nn.Module):
     """
@@ -30,22 +35,31 @@ class CopyGenerator(nn.Module):
         aeq(slen, slen_)
 
         # Original probabilities.
+        nonan(hidden, "generator.hidden")
         logits = self.linear(hidden)
+        nonan(logits, "generator.logits:0")
         logits[:, self.tgt_dict.stoi[onmt.IO.PAD_WORD]] = -float('inf')
+        nonan(logits, "generator.logits:1")
         prob = F.softmax(logits)
+        nonan(prob, "generator.prob")
 
         # Probability of copying p(z=1) batch.
         copy = F.sigmoid(self.linear_copy(hidden))
+        nonan(copy, "generator.copy")
 
         # Probibility of not copying: p_{word}(w) * (1 - p(z))
         out_prob = torch.mul(prob,  1 - copy.expand_as(prob))
+        nonan(out_prob, "generator.out_prob")
         mul_attn = torch.mul(attn, copy.expand_as(attn))
+        nonan(mul_attn, "generator.mul_attn")
         copy_prob = torch.bmm(mul_attn.view(-1, batch, slen)
                               .transpose(0, 1),
                               src_map.transpose(0, 1)).transpose(0, 1)
+        nonan(copy_prob, "generator.copy_prob:0")
         copy_prob = copy_prob.contiguous().view(-1, cvocab)
-
+        nonan(copy_prob, "generator.copy_prob:1")
         scores = torch.cat([out_prob, copy_prob], 1)
+        nonan(scores, "generator.scores")
         if return_switch:
             return scores, copy
         return scores
@@ -60,9 +74,11 @@ class CopyGeneratorCriterion(object):
 
     def __call__(self, scores, align, target):
         align = align.view(-1)
+        nonan(align, "criterion.align")
         # Copy prob.
         out = scores.gather(1, align.view(-1, 1) + self.offset) \
                     .view(-1).mul(align.ne(0).float())
+        nonan(out, "criterion.out:0")
         tmp = scores.gather(1, target.view(-1, 1)).view(-1)
 
         # Regular prob (no unks and unks that can't be copied)
@@ -72,9 +88,11 @@ class CopyGeneratorCriterion(object):
         else:
             # Forced copy.
             out = out + self.eps + tmp.mul(align.eq(0).float())
-
+        nonan(out, "criterion.out:1")
         # Drop padding.
         loss = -out.log().mul(target.ne(self.pad).float()).sum()
+        
+        nonan(loss, "criterion.loss")
         return loss
 
 

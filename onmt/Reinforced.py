@@ -92,7 +92,7 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
                                                  .squeeze()
 
             # [bs x src_len], invoc src tokens, or 1 (=pad)
-            src_token_invoc = _src.clone().masked_fill_(1-src_invoc_mask.byte(), -1) + 2
+            src_token_invoc = _src.clone().masked_fill_(1-src_invoc_mask.byte(), 1)
             
             if verbose:
                 print("cvoc_invoc_mask", cvoc_invoc_mask.size(), cvoc_invoc_mask[0])
@@ -104,14 +104,14 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
                 print("tgt", target.size(), target[0])
                 print(src_copy_scores.size())
                 print(src_token_invoc.size())
-                
             _scores.scatter_add_(1, src_token_invoc.long(), src_copy_scores)
             _scores[:, offset:] *= (1-cvoc_invoc_mask.float())
             _scores[:, 1] = 0
+
             _scores_data = _scores
             scores_data = _scores_data
 
-        if False and collapse and (collapse_both or not experimental_collapse):
+        if collapse and (collapse_both or not experimental_collapse):
             scores_data = scores.data.clone()
             scores_data = self.dataset.collapse_copy_scores(
                     self.unbottle(scores_data, batch.batch_size),
@@ -119,24 +119,20 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             scores_data = self.bottle(scores_data)
 
         if collapse_both:
+            # Experimental: comparing two collapsing techniques outputs
             _s = list(_scores_data.size())
             _t = _s[0] * _s[1]
             _err = (_scores_data != scores_data).sum()
-            #print("collapse diff: %d %d %f" %  ((_err, _t, _err/_t)))
-            #print("collaspes: ", torch.stack([_scores_data[0], scores_data[0]], 1)[:50, :])
-            #print("collapse sums: ", _scores_data.sum(), scores_data.sum())
+            print("collapse diff: %d %d %f" %  ((_err, _t, _err/_t)))
+            print("collapse (scores, collapse, exp): ", torch.stack(
+                [scores.data[0], _scores_data[0], scores_data[0]], 1)[:50, :])
+            print("collapse sums: ", _scores_data.sum(), scores_data.sum())
             scores_data = _scores_data
-
-        #print(scores_data.size())
-        #print(torch.stack([scores[0], _scores_data[0], scores_data[0]], 1))
         
                 
         t.chkpt("collapse_scores")
 
         # Correct target is copy when only option.
-        # TODO: replace for loop with masking or boolean indexing
-        
-        # old tgt correction
         target_data = target.data.clone()
         correct_mask = target_data.eq(0) * align.data.ne(0)
         correct_copy = (align.data + len(self.tgt_vocab)) * correct_mask.long()
@@ -217,14 +213,38 @@ class RTrainer(onmt.Trainer.Trainer):
                                                     self.train_loss,
                                                     dec_state)
 
+                dec_emb = self.model.decoder.embeddings
+                nonan(dec_emb.weight, "emb_weight")
+                if dec_emb.full_embedding:
+                    nonan(self.model.decoder.embeddings.full_embedding.weight, "full_emb_weight")
+                
                 # 4. Update the parameters and statistics.
                 self.optim.step()
-                # print("RTrainer post-optim: ")
+                
+                # Post-optim no NaN check
                 nonan(dec_state.hidden[0], "sth0")
                 nonan(dec_state.hidden[1], "sth1")
+                nan_exception = False
+                try:
+                    nonan(self.model.decoder.embeddings.weight, "emb_weight")
+                except ValueError as e:
+                    print(e)
+                    nan_exception = True
+                    print(self.model.decoder.embeddings._weight()[:20, :5])
+
+                try:
+                    nonan(self.model.decoder.embeddings.full_embedding.weight, "full_emb_weight")
+                except AttributeError:
+                    pass
+                except ValueError as e:
+                    print(e)
+                    nan_exception = True
+                    print(self.model.decoder.embeddings.full_embedding.weight[:20, :5])
                 
-                nonan(self.model.decoder.embeddings.full_embedding.weight, "full_emb_weight")
-                nonan(self.model.decoder.embeddings.weight, "emb_weight")
+                if nan_exception:
+                    raise ValueError("Optim Step Raised NaN in embeddings")
+
+
 
                 total_stats.update(batch_stats)
                 report_stats.update(batch_stats)
@@ -267,9 +287,15 @@ class RTrainer(onmt.Trainer.Trainer):
 
 
 def nonan(variable, name):
-    st = variable.data
-    if not (st != st).sum() == 0:
-        print("NaN values in %s=%s" % (name, str(st)))
+    d = variable.data
+    nan = (d != d)
+    if not nan.sum() == 0:
+        print("NaN values in %s: %s" % (name, str(d)))
+        inan = nan.max(0)
+        print("Occuring at index: ", inan)
+
+        i = inan[1][0]
+        print("First occurence (with previous/next 5 values): ", d[i-5:i+5, :])
         raise ValueError()
 
 
@@ -372,7 +398,7 @@ class IntraAttention(_Module):
 class PointerGenerator(CopyGenerator):
     def __init__(self, opt, tgt_vocab, embeddings):
         super(PointerGenerator, self).__init__(opt, tgt_vocab)
-        self.input_size = opt.rnn_size*3
+        self.input_size = opt.rnn_size * 3
         self.embeddings = embeddings
         W_emb = embeddings.weight
         self.linear_copy = nn.Linear(self.input_size, 1)
@@ -408,7 +434,14 @@ class PointerGenerator(CopyGenerator):
             Returns:
                 logits (FloatTensor): logits = W_out * V + b_out, [3*dim]
         """
-        return (self.W_out(force) @ V.t() + self.b_out).t()
+        W = self.W_out(force)
+        nonan(W, "pointergenerator.W_out")
+        nonan(self.b_out, "pointergenerator.b_out")
+        nonan(V, "pointergenerator.V")
+
+        o = (W @ V.t() + self.b_out).t()
+        nonan(o, "pointergenerator.output")
+        return o
 
 
 class ReinforcedDecoder(_Module):
@@ -474,6 +507,9 @@ class ReinforcedDecoder(_Module):
             None: TODO refactor
             None: TODO refactor
         """
+        #print(src[:, 0, 0])
+        #print(inputs[:, 0])
+        #print(tgt[:, 0])
         #print("decoder call: ")
         nonan(state.hidden[0], "sth0")
         nonan(state.hidden[1], "sth1")
@@ -566,7 +602,9 @@ class ReinforcedDecoder(_Module):
                     nonan(switch_t, "switch_t")
                     nonan(pred_t, "pred_t")
                     nonan(output, "output")
-                except ValueError:
+                    nonan(loss_t, "loss")
+                except ValueError as e:
+                    print(e)
                     print("t=%d" % t)
                     print("hd_t", hd_t)
                     print("c_e", c_e)
@@ -574,7 +612,7 @@ class ReinforcedDecoder(_Module):
                     print("attn", alpha_e)
                     print("pred", pred_t)
                     print("switch", switch_t)
-                    exit()     
+                    raise ValueError()
                 stats.update(stats_t)
                 loss = loss + loss_t if loss is not None else loss_t
             else:
@@ -609,6 +647,8 @@ class ReinforcedDecoder(_Module):
 
         # backpropagation (& typical debug prints)
         if self.training:
+            nonan(inputs_t, "inputs_t")
+            nonan(loss, "loss (t=%d)" % t)
             # print("decoder call: ")
             nonan(state.hidden[0], "sth0")
             nonan(state.hidden[1], "sth1")

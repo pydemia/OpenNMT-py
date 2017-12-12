@@ -191,7 +191,6 @@ def train_opts(parser):
     parser.add_argument('-reinforced', action="store_true",
                         help="""WIP Use Reinforced model of Paulus 2017""")
 
-
 def preprocess_opts(parser):
     # Dictionary Options
     parser.add_argument('-src_vocab_size', type=int, default=50000,
@@ -222,6 +221,8 @@ def preprocess_opts(parser):
                         help="Create dynamic dictionaries")
     parser.add_argument('-share_vocab', action='store_true',
                         help="Share source and target vocabulary")
+    parser.add_argument('-trunc_tgt_vocab', type=int, default=-1,
+                        help="Truncate shared vocabulary (see `-share_vocab`)")
 
 
 def add_md_help_argument(parser):

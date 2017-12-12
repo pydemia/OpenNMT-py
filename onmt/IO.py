@@ -53,10 +53,16 @@ def merge_vocabs(vocabs, vocab_size=None):
     Return:
         `torchtext.vocab.Vocab`
     """
-    merged = Counter(chain(*[vocab.freqs for vocab in vocabs]))
+    # NOTE: already merged on master
+    merged = sum([vocab.freqs for vocab in vocabs], Counter())
     return torchtext.vocab.Vocab(merged,
                                  specials=[PAD_WORD, BOS_WORD, EOS_WORD],
                                  max_size=vocab_size)
+
+def trunc_vocab(vocab, trunc_size):
+    return torchtext.vocab.Vocab(vocab.freqs,
+                                 specials=[PAD_WORD, BOS_WORD, EOS_WORD],
+                                 max_size=trunc_size)
 
 
 def make_features(batch, side):
@@ -353,11 +359,15 @@ class ONMTDataset(torchtext.data.Dataset):
         # Merge the input and output vocabularies.
         if opt.share_vocab:
             # `tgt_vocab_size` is ignored when sharing vocabularies
+            # if `trunc_tgt_vocab` isn't set
             merged_vocab = merge_vocabs(
                 [fields["src"].vocab, fields["tgt"].vocab],
                 vocab_size=opt.src_vocab_size)
             fields["src"].vocab = merged_vocab
-            fields["tgt"].vocab = merged_vocab
+            if opt.trunc_tgt_vocab == -1:
+                fields["tgt"].vocab = merged_vocab
+            else:
+                fields["tgt"].vocab = trunc_vocab(merged_vocab, opt.trunc_tgt_vocab)
 
 
 def load_image_libs():
