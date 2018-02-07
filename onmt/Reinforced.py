@@ -207,7 +207,7 @@ class RTrainer(onmt.Trainer.Trainer):
 
                 # 2. & 3. F-prop and compute loss
                 self.model.zero_grad()
-                batch_stats, dec_state = self.model(src, tgt,
+                loss, batch_stats, dec_state = self.model(src, tgt,
                                                     src_lengths,
                                                     batch,
                                                     self.train_loss,
@@ -218,6 +218,7 @@ class RTrainer(onmt.Trainer.Trainer):
                 if dec_emb.full_embedding:
                     nonan(self.model.decoder.embeddings.full_embedding.weight, "full_emb_weight")
                 
+                loss.backward()
                 # 4. Update the parameters and statistics.
                 self.optim.step()
                 
@@ -275,7 +276,7 @@ class RTrainer(onmt.Trainer.Trainer):
 
             batch.alignment = batch.alignment[1:]
             # F-prop through the model.
-            batch_stats, _ = self.model(
+            _, batch_stats, _ = self.model(
                 src, tgt, src_lengths, batch, self.valid_loss)
             # Update statistics.
             stats.update(batch_stats)
@@ -653,7 +654,7 @@ class ReinforcedDecoder(_Module):
             nonan(state.hidden[0], "sth0")
             nonan(state.hidden[1], "sth1")
             #nonan(self.embeddings.full_embedding.weight, "emb_weight")
-            loss.backward()
+            #loss.backward()
             # print("decoder post-bw: ")
             nonan(state.hidden[0], "sth0")
             nonan(state.hidden[1], "sth1")
@@ -670,7 +671,7 @@ class ReinforcedDecoder(_Module):
         gtimer.stop("backward", append="\n")
         state.update_state(hidden, None, None)
         if not ret_hists:
-            return stats, state, scores, attns    
+            return loss, stats, state, scores, attns
         return stats, state, scores, attns, hd_history, E_hist
 
 
@@ -696,11 +697,11 @@ class ReinforcedModel(onmt.Models.NMTModel):
                                                     enc_hidden=enc_hidden,
                                                     context=enc_out)
         state = enc_state if dec_state is None else dec_state
-        stats, hidden, _, _ = self.decoder(tgt[:-1], src, enc_out,
+        loss, stats, hidden, _, _ = self.decoder(tgt[:-1], src, enc_out,
                                            state, batch, loss_compute,
                                            tgt=tgt[1:])
 
-        return stats, state
+        return loss, stats, state
 
 
 class DummyGenerator:
