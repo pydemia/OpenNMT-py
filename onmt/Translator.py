@@ -115,7 +115,8 @@ class Translator(object):
         beam = [onmt.Beam(beam_size, n_best=self.opt.n_best,
                           cuda=self.opt.cuda,
                           vocab=self.fields["tgt"].vocab,
-                          global_scorer=scorer)
+                          global_scorer=scorer,
+                          avoid_trigram_repetition=self.opt.avoid_trigram_repetition)
                 for __ in range(batch_size)]
 
         # (2) run the decoder to generate sentences, using beam search.
@@ -192,6 +193,7 @@ class Translator(object):
 
         # (3) Package everything up.
         allHyps, allScores, allAttn = [], [], []
+        alltHyps = []
         for b in beam:
             n_best = self.opt.n_best
             scores, ks = b.sortFinished(minimum=n_best)
@@ -203,15 +205,16 @@ class Translator(object):
             allHyps.append(hyps)
             allScores.append(scores)
             allAttn.append(attn)
+            alltHyps.append(b.hyps)
 
-        return allHyps, allScores, allAttn, allGold
+        return allHyps, allScores, allAttn, allGold, alltHyps
 
     def translate(self, batch, data):
         #  (1) convert words to indexes
         batch_size = batch.batch_size
 
         #  (2) translate
-        pred, predScore, attn, goldScore = self.translateBatch(batch, data)
+        pred, predScore, attn, goldScore, hyps = self.translateBatch(batch, data)
         assert(len(goldScore) == len(pred))
         pred, predScore, attn, goldScore, i = list(zip(
             *sorted(zip(pred, predScore, attn, goldScore,
@@ -234,4 +237,4 @@ class Translator(object):
                 goldBatch.append(
                     self.buildTargetTokens(tgt[1:, b], src[:, b],
                                            None, None))
-        return predBatch, goldBatch, predScore, goldScore, attn, src
+        return predBatch, goldBatch, predScore, goldScore, attn, src, hyps

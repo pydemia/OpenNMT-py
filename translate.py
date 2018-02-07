@@ -61,7 +61,9 @@ parser.add_argument('-dynamic_dict', action='store_true',
                     help="Create dynamic dictionaries")
 parser.add_argument('-share_vocab', action='store_true',
                     help="Share source and target vocabulary")
-
+parser.add_argument('-avoid_trigram_repetition', action='store_true',
+                    help="""Avoiding multiple trigram occurence in prediction
+                    as in Paulus, et al. (2017) sect""")
 
 def report_score(name, score_total, words_total):
     print("%s AVG SCORE: %.4f, %s PPL: %.4f" % (
@@ -102,7 +104,7 @@ def main():
 
     counter = count(1)
     for batch in test_data:
-        pred_batch, gold_batch, pred_scores, gold_scores, attn, src \
+        pred_batch, gold_batch, pred_scores, gold_scores, attn, src, hyps \
             = translator.translate(batch, data)
         pred_score_total += sum(score[0] for score in pred_scores)
         pred_words_total += sum(len(x[0]) for x in pred_batch)
