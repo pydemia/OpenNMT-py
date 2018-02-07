@@ -377,11 +377,6 @@ class IntraAttention(_Module):
                 M = next_E_history.max(0)[0]
                 scores = (scores - M).exp() / (E_history - M).exp().sum(0)
                 nonan(scores, "scores") 
-                # torch 0.2.0 only run softmax on dim=1 of 2D tensors
-                # we want to run temporal softmax (on dim=0) thus we view
-                # [t x bs x n] as [bs*n x t]
-                #hist = E_history.view(-1, bs*n).t()
-                #scores = self.softmax(hist)[:, -1].contiguous().view(bs, n)
             
         # [bs, n]
         alpha = self.softmax(scores)
