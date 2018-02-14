@@ -343,7 +343,7 @@ class ONMTDataset(torchtext.data.Dataset):
         fields["indices"] = torchtext.data.Field(
             use_vocab=False, tensor_type=torch.LongTensor,
             sequential=False)
-
+        
         return fields
 
     @staticmethod

@@ -23,7 +23,7 @@ class CopyGenerator(nn.Module):
         self.linear_copy = nn.Linear(opt.rnn_size, 1)
         self.tgt_dict = tgt_dict
 
-    def forward(self, hidden, attn, src_map, return_switch=False):
+    def forward(self, hidden, attn, src_map, return_switch=False, entity_mask=None):
         """
         Computes p(w) = p(z=1) p_{copy}(w|z=0)  +  p(z=0) * p_{softmax}(w|z=0)
         """
@@ -40,7 +40,7 @@ class CopyGenerator(nn.Module):
         nonan(logits, "generator.logits:0")
         logits[:, self.tgt_dict.stoi[onmt.IO.PAD_WORD]] = -float('inf')
         nonan(logits, "generator.logits:1")
-        prob = F.softmax(logits)
+        prob = F.softmax(logits, dim=1)
         nonan(prob, "generator.prob")
 
         # Probability of copying p(z=1) batch.

@@ -54,7 +54,8 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
                                     output,
                                     copy_attn,
                                     batch.src_map,
-                                    return_switch=True)
+                                    return_switch=True,
+                                    entity_mask=batch.entity_mask)
         t.chkpt("generator")
         loss = self.criterion(scores, align, target)
         t.chkpt("criterion")
@@ -104,7 +105,22 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
                 print("tgt", target.size(), target[0])
                 print(src_copy_scores.size())
                 print(src_token_invoc.size())
-            _scores.scatter_add_(1, src_token_invoc.long(), src_copy_scores)
+            
+            src_token_invoc = src_token_invoc.view(bs, -1)
+            src_copy_scores = src_copy_scores.view(bs, -1)
+            try:
+                _scores.scatter_add_(1, src_token_invoc.long(), src_copy_scores)
+            except Exception as e:
+                print(_scores.size())
+                print(src_token_invoc.size())
+                print(src_copy_scores.size())
+                print(scores)
+                print(src_token_invoc)
+                print(src_copy_scores)
+                print(e)
+                exit()
+
+            
             _scores[:, offset:] *= (1-cvoc_invoc_mask.float())
             _scores[:, 1] = 0
 
@@ -199,6 +215,7 @@ class RTrainer(onmt.Trainer.Trainer):
             tgt_outer = onmt.IO.make_features(batch, 'tgt')
             report_stats.n_src_words += src_lengths.sum()
             alignment = batch.alignment
+            entity_mask = batch.entity_mask
 
             for j in range(0, target_size-1, trunc_size):
                 # 1. Create truncated target.
@@ -345,7 +362,7 @@ class IntraAttention(_Module):
         self.temporal = temporal
         self.linear = nn.Linear(dim, dim, bias=False)
 
-        self.softmax = nn.Softmax()
+        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, h_t, h, E_history=None, mask=None, debug=False):
         """
@@ -366,26 +383,34 @@ class IntraAttention(_Module):
         _h = h.view(n, bs, dim)
 
         # e_t = [bs, 1, dim] bmm [bs, dim, n] = [bs, n] (after squeeze)
-        scores = _h_t.bmm(_h.transpose(0, 1).transpose(1, 2)).squeeze(1)
+        E = _h_t.bmm(_h.transpose(0, 1).transpose(1, 2)).squeeze(1)
         
         next_E_history = None
+        alpha = None
         if self.temporal:
             if E_history is None:
-                next_E_history = scores.unsqueeze(0)
+                next_E_history = E.unsqueeze(0)
             else:
-                next_E_history = torch.cat([E_history, scores.unsqueeze(0)], 0)
+                next_E_history = torch.cat([E_history, E.unsqueeze(0)], 0)
                 M = next_E_history.max(0)[0]
-                scores = (scores - M).exp() / (E_history - M).exp().sum(0)
-                nonan(scores, "scores") 
-            
-        # [bs, n]
-        alpha = self.softmax(scores)
+                E = (E - M).exp() / (E_history - M).exp().sum(0)
+                # alpha = self.softmax(E)
+                assert_size(E, [bs, n])
+                S = E.sum(1)
+                assert_size(S, [bs]) 
+                alpha = E / S.unsqueeze(1)
+        
+        if alpha is None:
+            alpha = self.softmax(E)
 
+        nonan(alpha, "alpha")
+        assert_size(alpha, [bs, n])
         # [bs, 1, n] bmm [n, bs, dim] = [bs, 1, n]
         # [bs, dim, n] bmm [bs, n, 1] = [bs, dim, 1]
         # [bs, 1, n] bmm [bs, n, dim] = [bs, 1, dim]
         C_t = alpha.unsqueeze(1).bmm(_h.transpose(0, 1)).squeeze(1)
-
+        assert_size(C_t, [bs, dim])
+        nonan(C_t, "C_t")
         if self.temporal:
             return C_t, alpha, next_E_history
         return C_t, alpha
@@ -494,7 +519,6 @@ class ReinforcedDecoder(_Module):
             src (LongTensor): [src_len x bs x 1]
             h_e (FloatTensor): [src_len x bs x dim]
             state: onmt.Models.DecoderState
-            src_map: batch src (see IO)
             tgt (LongTensor): [tgt_len x bs]
 
         Returns:
@@ -615,7 +639,7 @@ class ReinforcedDecoder(_Module):
                 # In translation case we just want scores
                 # prediction itself will be done with beam search
                 output = torch.cat([hd_t, c_e, cd_t], dim=1)
-                scores_t = generator(output, alpha_e, batch.src_map)
+                scores_t = generator(output, alpha_e, batch.src_map)#, entity_mask=batch.entity_mask)
                 scores += [scores_t]
                 attns += [alpha_e]
                 dec_attns += [alpha_d]
