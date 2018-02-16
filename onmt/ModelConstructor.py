@@ -136,6 +136,22 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
                                model_opt.brnn,
                                model_opt.rnn_size,
                                model_opt.dropout)
+    
+    """
+        Super Experimental Tweak for Partial Embedding
+        Given that we built the vocabulary with share_vocab
+        we now want to reduce the tgt dict to a smaller vocab size
+    """
+    tgt_counter = fields["tgt"].vocab.freqs
+    from collections import Counter
+    # TODO dont hardcode
+    tgt_vocab_size = 50000
+    print("[WARNING] Tgt vocab size is cut to the hardcoded value: %d") 
+    sub_counter = Counter({_[0]: _[1] for _ in tgt_counter.most_common(tgt_vocab_size)})
+    import torchtext.vocab
+    tgt_vocab = torchtext.vocab.Vocab(sub_counter)
+    tgt_vocab = torchtext.vocab.Vocab(sub_counter, specials=['<blank>', '<s>', '</s>'])
+    fields["tgt"].vocab = tgt_vocab
 
     # Make decoder.
     tgt_dict = fields["tgt"].vocab
@@ -146,7 +162,7 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     if model_opt.share_decoder_embeddings:
         tgt_embeddings = src_embeddings
     elif model_opt.reinforced:
-        tgt_embeddings = PartialEmbedding(len(tgt_dict),
+        tgt_embeddings = PartialEmbedding(len(tgt_vocab),
                                           src_embeddings,
                                           tgt_dict.stoi[onmt.IO.PAD_WORD])
     else:
@@ -161,7 +177,7 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
         model = onmt.Reinforced.ReinforcedModel(encoder, decoder)
 
     # Make Generator.
-    tgt_vocab = fields["tgt"].vocab
+
     if model_opt.reinforced:
         generator = onmt.Reinforced.PointerGenerator(model_opt,
                                                      tgt_vocab,

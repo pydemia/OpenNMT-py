@@ -23,6 +23,7 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             generator, tgt_vocab, dataset, force_copy, eps)
         self.tgt_vocab = tgt_vocab
 
+
     def remove_oov(self, pred):
         """Remove out-of-vocabulary tokens
            usefull when we wants to use predictions (that contains oov due
