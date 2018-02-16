@@ -55,8 +55,7 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
                                     output,
                                     copy_attn,
                                     batch.src_map,
-                                    return_switch=True,
-                                    entity_mask=batch.entity_mask)
+                                    return_switch=True)
         t.chkpt("generator")
         loss = self.criterion(scores, align, target)
         t.chkpt("criterion")
@@ -216,7 +215,6 @@ class RTrainer(onmt.Trainer.Trainer):
             tgt_outer = onmt.IO.make_features(batch, 'tgt')
             report_stats.n_src_words += src_lengths.sum()
             alignment = batch.alignment
-            entity_mask = batch.entity_mask
 
             for j in range(0, target_size-1, trunc_size):
                 # 1. Create truncated target.
