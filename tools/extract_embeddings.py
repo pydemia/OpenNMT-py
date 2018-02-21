@@ -4,7 +4,7 @@ import torch
 import argparse
 
 from onmt.ModelConstructor import make_embeddings, \
-                            make_encoder, make_decoder
+    make_encoder, make_decoder
 
 parser = argparse.ArgumentParser(description='translate.py')
 

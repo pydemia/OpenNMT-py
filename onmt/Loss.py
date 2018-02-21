@@ -19,6 +19,7 @@ class LossComputeBase(nn.Module):
     Users need to implement the compute_loss() method.
     We inherits from nn.Module to leverage the cuda behavior.
     """
+
     def __init__(self, generator, tgt_vocab):
         super(LossComputeBase, self).__init__()
         self.generator = generator
@@ -80,6 +81,7 @@ class NMTLossCompute(LossComputeBase):
     """
     Standard NMT Loss Computation.
     """
+
     def __init__(self, generator, tgt_vocab):
         super(NMTLossCompute, self).__init__(generator, tgt_vocab)
 

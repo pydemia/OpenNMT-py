@@ -84,9 +84,9 @@ def make_train_data_iter(train_data, opt):
     like curriculum learning is ok too.
     """
     return onmt.IO.OrderedIterator(
-                dataset=train_data, batch_size=opt.batch_size,
-                device=opt.gpuid[0] if opt.gpuid else -1,
-                repeat=False)
+        dataset=train_data, batch_size=opt.batch_size,
+        device=opt.gpuid[0] if opt.gpuid else -1,
+        repeat=False)
 
 
 def make_valid_data_iter(valid_data, opt):
@@ -97,9 +97,9 @@ def make_valid_data_iter(valid_data, opt):
     is ok too.
     """
     return onmt.IO.OrderedIterator(
-                dataset=valid_data, batch_size=opt.batch_size,
-                device=opt.gpuid[0] if opt.gpuid else -1,
-                train=False, sort=True)
+        dataset=valid_data, batch_size=opt.batch_size,
+        device=opt.gpuid[0] if opt.gpuid else -1,
+        train=False, sort=True)
 
 
 def make_loss_compute(model, tgt_vocab, dataset, opt):
@@ -201,9 +201,9 @@ def tally_parameters(model):
 
 def load_fields(train, valid, checkpoint):
     fields = onmt.IO.ONMTDataset.load_fields(
-                torch.load(opt.data + '.vocab.pt'))
+        torch.load(opt.data + '.vocab.pt'))
     fields = dict([(k, f) for (k, f) in fields.items()
-                  if k in train.examples[0].__dict__])
+                   if k in train.examples[0].__dict__])
     train.fields = fields
     valid.fields = fields
 

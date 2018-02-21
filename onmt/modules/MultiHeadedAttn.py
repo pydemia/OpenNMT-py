@@ -5,13 +5,14 @@ from torch.autograd import Variable
 
 from onmt.Utils import aeq
 from onmt.modules.UtilClass import BottleLinear, \
-                    BottleLayerNorm, BottleSoftmax
+    BottleLayerNorm, BottleSoftmax
 
 
 class MultiHeadedAttention(nn.Module):
     ''' Multi-Head Attention module from
         "Attention is All You Need".
     '''
+
     def __init__(self, head_count, model_dim, p=0.1):
         """
         Args:

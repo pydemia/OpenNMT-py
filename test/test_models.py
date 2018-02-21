@@ -8,7 +8,7 @@ from torch.autograd import Variable
 import onmt
 import opts
 from onmt.ModelConstructor import make_embeddings, \
-                            make_encoder, make_decoder
+    make_encoder, make_decoder
 
 parser = argparse.ArgumentParser(description='train.py')
 opts.model_opts(parser)

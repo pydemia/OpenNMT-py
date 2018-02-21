@@ -51,6 +51,7 @@ class Embeddings(nn.Module):
         feat_vocab_sizes ([int], optional): list of size of dictionary
                                     of embeddings for each feature.
     """
+
     def __init__(self, word_vec_size, position_encoding, feat_merge,
                  feat_vec_exponent, feat_vec_size, dropout,
                  word_padding_idx, feat_padding_idx,
@@ -153,7 +154,7 @@ class PartialEmbedding(nn.Embedding):
     def __init__(self, partial_num_embeddings, embedding, padding_idx):
         self.partial_num_embeddings = partial_num_embeddings
         self.nspe = 0
-        
+
         super(PartialEmbedding, self).__init__(partial_num_embeddings,
                                                embedding.embedding_size,
                                                padding_idx)
@@ -163,12 +164,11 @@ class PartialEmbedding(nn.Embedding):
             self.spe = nn.Parameter(torch.Tensor(4, embedding.embedding_size))
         elif self.nspe == 0:
             pass
-        else: 
+        else:
             raise ValueError("Incorrect value for nspe")
-        
+
         self.full_embedding = embedding
 
-        
     @property
     def weight(self):
         return self.full_embedding.weight[:self.partial_num_embeddings, :]
@@ -210,7 +210,7 @@ class PartialEmbedding(nn.Embedding):
 
         _input = input.squeeze(2).t()
         #_input.data.masked_fill_(_input.data.gt(self.partial_num_embeddings), 0)
-        
+
         _emb = super(PartialEmbedding, self).forward(_input)
         emb = _emb.transpose(0, 1)
 
@@ -229,5 +229,5 @@ class PartialEmbedding(nn.Embedding):
         assert l == _l
         assert _bs == bs
         assert _emb_size == self.embedding_dim
-        #print(emb)
+        # print(emb)
         return emb

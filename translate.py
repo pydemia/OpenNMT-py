@@ -65,6 +65,7 @@ parser.add_argument('-avoid_trigram_repetition', action='store_true',
                     help="""Avoiding multiple trigram occurence in prediction
                     as in Paulus, et al. (2017) sect""")
 
+
 def report_score(name, score_total, words_total):
     print("%s AVG SCORE: %.4f, %s PPL: %.4f" % (
         name, score_total / words_total,
@@ -118,9 +119,9 @@ def main():
         # plain-old zip because the gold_batch has length 0 if the target
         # is not included.
         z_batch = zip_longest(
-                pred_batch, gold_batch,
-                pred_scores, gold_scores,
-                (sent.squeeze(1) for sent in src.split(1, dim=1)))
+            pred_batch, gold_batch,
+            pred_scores, gold_scores,
+            (sent.squeeze(1) for sent in src.split(1, dim=1)))
 
         for pred_sents, gold_sent, pred_score, gold_score, src_sent in z_batch:
             n_best_preds = [" ".join(pred) for pred in pred_sents[:opt.n_best]]
@@ -145,14 +146,14 @@ def main():
                 if opt.tgt:
                     tgt_sent = ' '.join(gold_sent)
                     os.write(1, bytes('GOLD %d: %s\n' %
-                             (sent_number, tgt_sent), 'UTF-8'))
+                                      (sent_number, tgt_sent), 'UTF-8'))
                     print("GOLD SCORE: %.4f" % gold_score)
 
                 if len(n_best_preds) > 1:
                     print('\nBEST HYP:')
                     for score, sent in zip(pred_score, n_best_preds):
                         os.write(1, bytes("[%.4f] %s\n" % (score, sent),
-                                 'UTF-8'))
+                                          'UTF-8'))
 
     report_score('PRED', pred_score_total, pred_words_total)
     if opt.tgt:

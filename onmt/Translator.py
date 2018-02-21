@@ -27,7 +27,7 @@ class Translator(object):
         self.copy_attn = model_opt.copy_attn
 
         self.model = onmt.ModelConstructor.make_base_model(
-                            model_opt, self.fields, use_gpu(opt), checkpoint)
+            model_opt, self.fields, use_gpu(opt), checkpoint)
         self.model.eval()
         self.model.generator.eval()
 
@@ -70,7 +70,7 @@ class Translator(object):
         #  (1) run the encoder on the src
         encStates, context = self.model.encoder(src, src_lengths)
         decStates = self.model.decoder.init_decoder_state(
-                                        src, context, encStates)
+            src, context, encStates)
 
         #  (2) if a target is specified, compute the 'goldScore'
         #  (i.e. log likelihood) of the target under the model
@@ -98,7 +98,7 @@ class Translator(object):
         src = onmt.IO.make_features(batch, 'src')
         encStates, context = self.model.encoder(src, src_lengths)
         decStates = self.model.decoder.init_decoder_state(
-                                        src, context, encStates)
+            src, context, encStates)
 
         #  (1b) Initialize for the decoder.
         def var(a): return Variable(a, volatile=True)
@@ -162,21 +162,21 @@ class Translator(object):
                     # beam x tgt_vocab
             else:
                 stats, dec_state, scores, attns, hd_hist, E_hist = \
-                        self.model.decoder(inp,
-                                           src,
-                                           context,
-                                           decStates,
-                                           batch,
-                                           generator=self.model.generator,
-                                           hd_history=hd_hist,
-                                           E_hist=E_hist,
-                                           ret_hists=True)
+                    self.model.decoder(inp,
+                                       src,
+                                       context,
+                                       decStates,
+                                       batch,
+                                       generator=self.model.generator,
+                                       hd_history=hd_hist,
+                                       E_hist=E_hist,
+                                       ret_hists=True)
 
                 scores = scores[0]
                 scores_data = scores.data
                 out = unbottle(scores_data)
                 out = dataset.collapse_copy_scores(
-                      out, batch, self.fields["tgt"].vocab)
+                    out, batch, self.fields["tgt"].vocab)
                 attn = {"std": torch.stack(attns, dim=0)
                                     .squeeze(0).contiguous()}
                 decStates = dec_state
@@ -214,7 +214,8 @@ class Translator(object):
         batch_size = batch.batch_size
 
         #  (2) translate
-        pred, predScore, attn, goldScore, hyps = self.translateBatch(batch, data)
+        pred, predScore, attn, goldScore, hyps = self.translateBatch(
+            batch, data)
         assert(len(goldScore) == len(pred))
         pred, predScore, attn, goldScore, i = list(zip(
             *sorted(zip(pred, predScore, attn, goldScore,

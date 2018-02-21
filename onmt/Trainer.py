@@ -23,6 +23,7 @@ class Statistics(object):
     """
     Train/validate loss statistics.
     """
+
     def __init__(self, loss=0, n_words=0, n_correct=0):
         self.loss = loss
         self.n_words = n_words
@@ -120,8 +121,8 @@ class Trainer(object):
 
                 # 3. Compute loss in shards for memory efficiency.
                 batch_stats = self.train_loss.sharded_compute_loss(
-                        batch, outputs, attns, j,
-                        trunc_size, self.shard_size)
+                    batch, outputs, attns, j,
+                    trunc_size, self.shard_size)
 
                 # 4. Update the parameters and statistics.
                 self.optim.step()

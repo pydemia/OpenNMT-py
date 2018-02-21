@@ -6,17 +6,20 @@ import torch.cuda
 import onmt
 from onmt.Utils import aeq
 
+
 def nonan(variable, name):
     st = variable.data
     if not (st != st).sum() == 0:
         print("NaN values in %s=%s" % (name, str(st)))
         raise ValueError()
 
+
 class CopyGenerator(nn.Module):
     """
     Generator module that additionally considers copying
     words directly from the source.
     """
+
     def __init__(self, opt, tgt_dict):
         super(CopyGenerator, self).__init__()
         self.linear = nn.Linear(opt.rnn_size, len(tgt_dict))
@@ -72,26 +75,43 @@ class CopyGeneratorCriterion(object):
         self.offset = vocab_size
         self.pad = pad
 
-    def __call__(self, scores, align, target):
+    def __call__(self, scores, align, target, return_sum=True):
         align = align.view(-1)
-        nonan(align, "criterion.align")
+        nonan(scores, "criterion.scores")
+
         # Copy prob.
-        out = scores.gather(1, align.view(-1, 1) + self.offset) \
-                    .view(-1).mul(align.ne(0).float())
-        nonan(out, "criterion.out:0")
+        shifted_align = align.view(-1, 1) + self.offset
+        try:
+            out = scores.gather(1, shifted_align) \
+                .view(-1).mul(align.ne(0).float())
+            nonan(out, "criterion.out:0")
+        except Exception as e:
+            print(scores.size())
+            print(shifted_align.size())
+            print(align.size())
+            print(shifted_align.max())
+            print(e)
+            exit()
+
+        # print(scores.size())
+        # print(target.size())
         tmp = scores.gather(1, target.view(-1, 1)).view(-1)
+        # nonan(tmp, "criterion.tmp")
 
         # Regular prob (no unks and unks that can't be copied)
         if not self.force_copy:
             out = out + self.eps + tmp.mul(target.ne(0).float()) + \
-                  tmp.mul(align.eq(0).float()).mul(target.eq(0).float())
+                tmp.mul(align.eq(0).float()).mul(target.eq(0).float())
         else:
             # Forced copy.
             out = out + self.eps + tmp.mul(align.eq(0).float())
         nonan(out, "criterion.out:1")
         # Drop padding.
-        loss = -out.log().mul(target.ne(self.pad).float()).sum()
-        
+        loss = -out.log().mul(target.ne(self.pad).float())
+        if return_sum:
+            # In some case we want the full loss
+            loss = loss.sum()
+
         nonan(loss, "criterion.loss")
         return loss
 
@@ -100,6 +120,7 @@ class CopyGeneratorLossCompute(onmt.Loss.LossComputeBase):
     """
     Copy Generator Loss Computation.
     """
+
     def __init__(self, generator, tgt_vocab, dataset,
                  force_copy, eps=1e-20):
         super(CopyGeneratorLossCompute, self).__init__(generator, tgt_vocab)
@@ -131,8 +152,8 @@ class CopyGeneratorLossCompute(onmt.Loss.LossComputeBase):
 
         scores_data = scores.data.clone()
         scores_data = self.dataset.collapse_copy_scores(
-                self.unbottle(scores_data, batch.batch_size),
-                batch, self.tgt_vocab)
+            self.unbottle(scores_data, batch.batch_size),
+            batch, self.tgt_vocab)
         scores_data = self.bottle(scores_data)
 
         # Correct target is copy when only option.

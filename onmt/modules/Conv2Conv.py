@@ -61,6 +61,7 @@ class CNNEncoder(EncoderBase):
     """
     Encoder built on CNN.
     """
+
     def __init__(self, num_layers, hidden_size,
                  cnn_kernel_width, dropout, embeddings):
         super(CNNEncoder, self).__init__()
@@ -94,6 +95,7 @@ class CNNDecoder(nn.Module):
     Decoder built on CNN, which consists of resduial convolutional layers,
     with ConvMultiStepAttention.
     """
+
     def __init__(self, num_layers, hidden_size, attn_type,
                  copy_attn, cnn_kernel_width, dropout, embeddings):
         super(CNNDecoder, self).__init__()

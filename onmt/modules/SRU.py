@@ -532,13 +532,13 @@ class SRUCell(nn.Module):
             mask_h = self.get_dropout_mask_((batch, n_out*bidir), self.dropout)
             h, c = SRU_Compute(self.activation_type, n_out,
                                self.bidirectional)(
-                       u, input, self.bias, c0, mask_h
-                   )
+                u, input, self.bias, c0, mask_h
+            )
         else:
             h, c = SRU_Compute(self.activation_type, n_out,
                                self.bidirectional)(
-                       u, input, self.bias, c0
-                   )
+                u, input, self.bias, c0
+            )
 
         return h, c
 

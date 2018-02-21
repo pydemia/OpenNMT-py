@@ -18,6 +18,7 @@ MAX_SIZE = 5000
 
 class PositionwiseFeedForward(nn.Module):
     """ A two-layer Feed-Forward-Network."""
+
     def __init__(self, size, hidden_size, dropout=0.1):
         """
         Args:
@@ -69,6 +70,7 @@ class TransformerEncoder(EncoderBase):
     """
     The Transformer encoder from "Attention is All You Need".
     """
+
     def __init__(self, num_layers, hidden_size,
                  dropout, embeddings):
         super(TransformerEncoder, self).__init__()
@@ -121,9 +123,9 @@ class TransformerDecoderLayer(nn.Module):
         """
         super(TransformerDecoderLayer, self).__init__()
         self.self_attn = onmt.modules.MultiHeadedAttention(
-                head_count, size, p=dropout)
+            head_count, size, p=dropout)
         self.context_attn = onmt.modules.MultiHeadedAttention(
-                head_count, size, p=dropout)
+            head_count, size, p=dropout)
         self.feed_forward = PositionwiseFeedForward(size,
                                                     hidden_size,
                                                     dropout)
@@ -147,7 +149,7 @@ class TransformerDecoderLayer(nn.Module):
         # END Args Checks
 
         dec_mask = torch.gt(tgt_pad_mask + self.mask[:, :tgt_pad_mask.size(1),
-                            :tgt_pad_mask.size(1)]
+                                                     :tgt_pad_mask.size(1)]
                             .expand_as(tgt_pad_mask), 0)
         query, attn = self.self_attn(input, input, input, mask=dec_mask)
         mid, attn = self.context_attn(context, context, query,
@@ -179,6 +181,7 @@ class TransformerDecoder(nn.Module):
     """
     The Transformer decoder from "Attention is All You Need".
     """
+
     def __init__(self, num_layers, hidden_size, attn_type,
                  copy_attn, dropout, embeddings):
         super(TransformerDecoder, self).__init__()

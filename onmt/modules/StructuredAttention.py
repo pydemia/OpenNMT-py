@@ -9,6 +9,7 @@ class MatrixTree(nn.Module):
     of non-projective dependency parsing. This attention layer is used
     in the paper "Learning Structured Text Representations."
     """
+
     def __init__(self, eps=1e-5):
         self.eps = eps
         super(MatrixTree, self).__init__()

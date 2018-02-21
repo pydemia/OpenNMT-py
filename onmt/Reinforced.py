@@ -17,12 +17,58 @@ from onmt.Profiler import timefunc, Timer
 from onmt.modules import CopyGeneratorLossCompute, CopyGenerator
 
 
+class RougeScorer:
+    def __init__(self):
+        import rouge as R
+        self.rouge = R.Rouge(stats=["f"], metrics=[
+                             "rouge-1", "rouge-2", "rouge-l"])
+
+    def _score(self, hyps, refs):
+        scores = self.rouge.get_scores(hyps, refs)
+        single_scores = [_['rouge-1']['f']*_['rouge-2']['f']*_['rouge-l']['f']
+                         for _ in scores]
+        return single_scores
+
+    def score(self, sample_pred, greedy_pred, tgt):
+        """
+            sample_pred: LongTensor [bs x len]
+            greedy_pred: LongTensor [bs x len]
+            tgt: LongTensor [bs x len]
+        """
+        def tens2sen(t):
+            sentences = []
+            for s in t:
+                sentence = []
+                for wt in s:
+                    word = wt.data[0]
+                    if word in [0, 3]:
+                        break
+                    sentence += [str(word)]
+                sentences += [" ".join(sentence)]
+            return sentences
+
+        # print("Loss: ", type(loss), loss.size())
+        # print("SPred: ", len(sample_pred), sample_pred[0].size())
+        # print("GPred: ", len(greedy_pred), greedy_pred[0].size())
+        # print("Tgt: ", tgt.size())
+        s_hyps = tens2sen(sample_pred)
+        g_hyps = tens2sen(greedy_pred)
+        refs = tens2sen(tgt)
+        # print(len(s_hyps), len(g_hyps), len(refs))
+        sample_scores = self._score(s_hyps, refs)
+        greedy_scores = self._score(g_hyps, refs)
+
+        ts = torch.Tensor(sample_scores)
+        gs = torch.Tensor(greedy_scores)
+
+        return (gs - ts)
+
+
 class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
     def __init__(self, generator, tgt_vocab, dataset, force_copy, eps=1e-20):
         super(EachStepGeneratorLossCompute, self).__init__(
             generator, tgt_vocab, dataset, force_copy, eps)
         self.tgt_vocab = tgt_vocab
-
 
     def remove_oov(self, pred):
         """Remove out-of-vocabulary tokens
@@ -32,7 +78,7 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         """
         return pred.masked_fill_(pred.gt(len(self.tgt_vocab) - 1), 0)
 
-    def compute_loss(self, batch, output, target, copy_attn, align, src):
+    def compute_loss(self, batch, output, target, copy_attn, align, src, prediction_type="greedy"):
         """
             align:      [bs]
             target:     [bs]
@@ -50,16 +96,17 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         align = align.view(-1)
         target = target.view(-1)
 
+        #
+        # GENERATOR: generating scores
+        #
         # scores: [bs x vocab + c_vocab]
         scores, switch_scores = self.generator(
-                                    output,
-                                    copy_attn,
-                                    batch.src_map,
-                                    return_switch=True)
+            output,
+            copy_attn,
+            batch.src_map,
+            return_switch=True)
         t.chkpt("generator")
-        loss = self.criterion(scores, align, target)
-        t.chkpt("criterion")
-
+        nonan(scores, "compute_loss.scores")
         _scores_incorrect = scores.data
         # Experimental:
         # fast copy collapse:
@@ -88,28 +135,33 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             # [bs x src_len], copy scores of invoc src tokens
             # [bs x 1 x cvocab] @bmm [bs x cvocab x src_len] = [bs x 1 x src_len]
             src_copy_scores = _scores[:, offset:].unsqueeze(1) \
-                                                 .bmm(_src_map.transpose(0, 1) \
+                                                 .bmm(_src_map.transpose(0, 1)
                                                               .transpose(1, 2)) \
                                                  .squeeze()
 
             # [bs x src_len], invoc src tokens, or 1 (=pad)
             src_token_invoc = _src.clone().masked_fill_(1-src_invoc_mask.byte(), 1)
-            
+
             if verbose:
-                print("cvoc_invoc_mask", cvoc_invoc_mask.size(), cvoc_invoc_mask[0])
-                print("src_invoc_mask", src_invoc_mask.size(), src_invoc_mask[0])
-                print("src_token_invoc", src_token_invoc.size(), src_token_invoc[0])
-                print("src_copy_scores", src_copy_scores.size(), src_copy_scores[0])
+                print("cvoc_invoc_mask", cvoc_invoc_mask.size(),
+                      cvoc_invoc_mask[0])
+                print("src_invoc_mask", src_invoc_mask.size(),
+                      src_invoc_mask[0])
+                print("src_token_invoc", src_token_invoc.size(),
+                      src_token_invoc[0])
+                print("src_copy_scores", src_copy_scores.size(),
+                      src_copy_scores[0])
                 print(_src_map.size())
                 print("src", src.size(), src[0])
                 print("tgt", target.size(), target[0])
                 print(src_copy_scores.size())
                 print(src_token_invoc.size())
-            
+
             src_token_invoc = src_token_invoc.view(bs, -1)
             src_copy_scores = src_copy_scores.view(bs, -1)
             try:
-                _scores.scatter_add_(1, src_token_invoc.long(), src_copy_scores)
+                _scores.scatter_add_(
+                    1, src_token_invoc.long(), src_copy_scores)
             except Exception as e:
                 print(_scores.size())
                 print(src_token_invoc.size())
@@ -120,7 +172,6 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
                 print(e)
                 exit()
 
-            
             _scores[:, offset:] *= (1-cvoc_invoc_mask.float())
             _scores[:, 1] = 0
 
@@ -130,8 +181,8 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         if collapse and (collapse_both or not experimental_collapse):
             scores_data = scores.data.clone()
             scores_data = self.dataset.collapse_copy_scores(
-                    self.unbottle(scores_data, batch.batch_size),
-                    batch, self.tgt_vocab)
+                self.unbottle(scores_data, batch.batch_size),
+                batch, self.tgt_vocab)
             scores_data = self.bottle(scores_data)
 
         if collapse_both:
@@ -139,14 +190,41 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             _s = list(_scores_data.size())
             _t = _s[0] * _s[1]
             _err = (_scores_data != scores_data).sum()
-            print("collapse diff: %d %d %f" %  ((_err, _t, _err/_t)))
+            print("collapse diff: %d %d %f" % ((_err, _t, _err/_t)))
             print("collapse (scores, collapse, exp): ", torch.stack(
                 [scores.data[0], _scores_data[0], scores_data[0]], 1)[:50, :])
             print("collapse sums: ", _scores_data.sum(), scores_data.sum())
             scores_data = _scores_data
-        
-                
+
         t.chkpt("collapse_scores")
+
+        #
+        # CRITERION & PREDICTION: Predicting & Calculating the loss
+        #
+        if prediction_type == "greedy":
+            _, pred = scores_data.max(1)
+            pred = torch.autograd.Variable(pred)
+            loss = self.criterion(scores, align, target)
+            loss_data = loss.data.clone()
+        elif prediction_type == "sample":
+
+            # print(scores.size
+            d = torch.distributions.Categorical(
+                scores_data[:, :len(self.tgt_vocab)])
+            # in this context target=1 if continue generation, 0 else:
+            # kinda hacky but efficient uknow
+            pred = torch.autograd.Variable(d.sample()) * target
+
+            # print("LossCompute: scores ", scores.size(), scores.max())
+            # print("Pred: ", pred.size(), pred.max())
+            # NOTE we use collapsed scores that account copy, thus align isnt needed
+            #      (+inadequate in free generation context)
+            loss = self.criterion(scores, align, pred, return_sum=False)
+            loss_data = loss.sum().data
+        else:
+            raise ValueError("Incorrect prediction_type %s" % prediction_type)
+
+        t.chkpt("criterion")
 
         # Correct target is copy when only option.
         target_data = target.data.clone()
@@ -156,28 +234,24 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         t.chkpt("fix_tgt2")
 
         if verbose:
-            print("targets: ", torch.stack([target.data, target_data, _target_data ], 1))
+            print("targets: ", torch.stack(
+                [target.data, target_data, _target_data], 1))
         t.chkpt("fix_tgt")
 
-
-        loss_data = loss.data.clone()
         stats = self.stats(loss_data, scores_data, target_data)
-
-        _, pred = scores_data.max(1)
-        pred = torch.autograd.Variable(pred)
 
         # for debugging purpose, it may be interesting to see prediction
         # before "correcting" it
-        _, incorrect_pred = _scores_incorrect.max(1)
-        if verbose:
-            print(type(incorrect_pred), incorrect_pred.size())
-            print(type(pred.data), pred.size())
-            print(type(target.data), target.size())
-            print(torch.stack([incorrect_pred, pred.data, target.data], 1))
+        #_, incorrect_pred = _scores_incorrect.max(1)
+        # if verbose:
+        #    print(type(incorrect_pred), incorrect_pred.size())
+        #    print(type(pred.data), pred.size())
+        #    print(type(target.data), target.size())
+        #    print(torch.stack([incorrect_pred, pred.data, target.data], 1))
 
         pred.cuda()
         t.stop()
-        return loss, pred, stats, switch_scores, incorrect_pred
+        return loss, pred, stats, switch_scores, None
 
 
 class RTrainer(onmt.Trainer.Trainer):
@@ -186,6 +260,7 @@ class RTrainer(onmt.Trainer.Trainer):
        it needs to predict output at each time steps
        the training process is therefore slightly different
     """
+
     def __init__(self, model, train_iter, valid_iter, train_loss,
                  valid_loss, optim, trunc_size):
         self.model = model
@@ -224,20 +299,21 @@ class RTrainer(onmt.Trainer.Trainer):
                 # 2. & 3. F-prop and compute loss
                 self.model.zero_grad()
                 loss, batch_stats, dec_state = self.model(src, tgt,
-                                                    src_lengths,
-                                                    batch,
-                                                    self.train_loss,
-                                                    dec_state)
+                                                          src_lengths,
+                                                          batch,
+                                                          self.train_loss,
+                                                          dec_state)
 
                 dec_emb = self.model.decoder.embeddings
                 nonan(dec_emb.weight, "emb_weight")
                 if dec_emb.full_embedding:
-                    nonan(self.model.decoder.embeddings.full_embedding.weight, "full_emb_weight")
-                
+                    nonan(
+                        self.model.decoder.embeddings.full_embedding.weight, "full_emb_weight")
+
                 loss.backward()
                 # 4. Update the parameters and statistics.
                 self.optim.step()
-                
+
                 # Post-optim no NaN check
                 nonan(dec_state.hidden[0], "sth0")
                 nonan(dec_state.hidden[1], "sth1")
@@ -250,18 +326,18 @@ class RTrainer(onmt.Trainer.Trainer):
                     print(self.model.decoder.embeddings._weight()[:20, :5])
 
                 try:
-                    nonan(self.model.decoder.embeddings.full_embedding.weight, "full_emb_weight")
+                    nonan(
+                        self.model.decoder.embeddings.full_embedding.weight, "full_emb_weight")
                 except AttributeError:
                     pass
                 except ValueError as e:
                     print(e)
                     nan_exception = True
-                    print(self.model.decoder.embeddings.full_embedding.weight[:20, :5])
-                
+                    print(
+                        self.model.decoder.embeddings.full_embedding.weight[:20, :5])
+
                 if nan_exception:
                     raise ValueError("Optim Step Raised NaN in embeddings")
-
-
 
                 total_stats.update(batch_stats)
                 report_stats.update(batch_stats)
@@ -355,6 +431,7 @@ def _friendly_aeq(real, expected):
 class IntraAttention(_Module):
     """IntraAttention Module as in sect. (2)
     """
+
     def __init__(self, opt, dim, temporal=False):
         super(IntraAttention, self).__init__(opt)
         self.dim = dim
@@ -377,13 +454,17 @@ class IntraAttention(_Module):
         bs, dim = h_t.size()
         n, _bs, _dim = h.size()
         assert (_bs, _dim) == (bs, dim)
+        if E_history is not None:
+            _t, __bs, _n = E_history.size()
+            assert (__bs, _n) == (_bs, n)
 
         _h_t = self.linear(h_t).unsqueeze(1)
         _h = h.view(n, bs, dim)
 
         # e_t = [bs, 1, dim] bmm [bs, dim, n] = [bs, n] (after squeeze)
         E = _h_t.bmm(_h.transpose(0, 1).transpose(1, 2)).squeeze(1)
-        
+        nonan(E, "E")
+
         next_E_history = None
         alpha = None
         if self.temporal:
@@ -396,9 +477,9 @@ class IntraAttention(_Module):
                 # alpha = self.softmax(E)
                 assert_size(E, [bs, n])
                 S = E.sum(1)
-                assert_size(S, [bs]) 
+                assert_size(S, [bs])
                 alpha = E / S.unsqueeze(1)
-        
+
         if alpha is None:
             alpha = self.softmax(E)
 
@@ -511,7 +592,8 @@ class ReinforcedDecoder(_Module):
 
     def forward(self, inputs, src, h_e, state, batch,
                 loss_compute=None, tgt=None, generator=None,
-                hd_history=None, E_hist=None, ret_hists=False):
+                hd_history=None, E_hist=None, ret_hists=False,
+                sampling=False):
         """
         Args:
             inputs (LongTensor): [tgt_len x bs]
@@ -566,12 +648,14 @@ class ReinforcedDecoder(_Module):
         devout_timer = prof.STDOUT if run_profiler else prof.DEVNULL
         gtimer = Timer("global_decoder", output=devout_timer)
         timer = Timer("decoder", output=devout_timer, prefix=prof.tabs())
-        for t in range(input_size):
+        t = 0
+        continue_generation = True
+        while continue_generation:
             # Embedding & intra-temporal attention on source
             src_mask = src.eq(self.pad_id)
             emb_t = self.embeddings(inputs_t.view(1, -1, 1)).squeeze(0)
             timer.chkpt("embedding")
-            
+
             hd_t, hidden = self.rnn(emb_t, hidden)
             timer.chkpt("rnn    ")
 
@@ -583,7 +667,7 @@ class ReinforcedDecoder(_Module):
                 print("embd: ", emb_t)
                 print("input_t: ", inputs_t)
                 print("whole inp: ", inputs)
-            
+
             c_e, alpha_e, E_hist = self.enc_attn(hd_t, h_e, E_history=E_hist)
             timer.chkpt("encoder attn")
 
@@ -601,21 +685,33 @@ class ReinforcedDecoder(_Module):
 
             # Prediction - Computing Loss
             if tgt is not None:
-                tgt_t = tgt[t, :]
                 output = torch.cat([hd_t, c_e, cd_t], dim=1)
+                if sampling:
+                    prediction_type = "sample"
+                    # TODO here 0 and 3 are hardcoded
+                    continue_gen = (inputs_t.ne(3) * inputs_t.ne(0))
+                    tgt_t = continue_gen.long()
+                    align = torch.autograd.Variable(
+                        torch.zeros([bs]).long().cuda())
+                else:
+                    tgt_t = tgt[t, :]
+                    prediction_type = "greedy"
+                    align = batch.alignment[t, :].contiguous()
+
                 loss_t, pred_t, stats_t, switch_t, i_pred_t = loss_compute(
                     batch,
                     output,
                     tgt_t,
                     copy_attn=alpha_e,
-                    align=batch.alignment[t, :].contiguous(),
-                    src=src)
+                    align=align,
+                    src=src,
+                    prediction_type=prediction_type)
                 outputs += [output]
                 attns += [alpha_e]
                 switchs += [switch_t]
                 preds += [pred_t]
-                ipreds += [i_pred_t]
-                
+                # ipreds += [i_pred_t]
+
                 try:
                     nonan(alpha_e, "alpha_e")
                     nonan(switch_t, "switch_t")
@@ -638,7 +734,8 @@ class ReinforcedDecoder(_Module):
                 # In translation case we just want scores
                 # prediction itself will be done with beam search
                 output = torch.cat([hd_t, c_e, cd_t], dim=1)
-                scores_t = generator(output, alpha_e, batch.src_map)#, entity_mask=batch.entity_mask)
+                # , entity_mask=batch.entity_mask)
+                scores_t = generator(output, alpha_e, batch.src_map)
                 scores += [scores_t]
                 attns += [alpha_e]
                 dec_attns += [alpha_d]
@@ -648,7 +745,9 @@ class ReinforcedDecoder(_Module):
 
             timer.chkpt("loss&pred")
 
-            if t < input_size - 1:
+            if sampling:
+                inputs_t = preds[-1]
+            elif t < input_size - 1:
                 if self.training:
                     # Exposure bias reduction by feeding predicted token
                     # with a 0.25 probability as mentionned in sect. 6.1:Setup
@@ -658,11 +757,16 @@ class ReinforcedDecoder(_Module):
                         torch.rand([bs]).lt(0.25).long())
                     inputs_t = exposure_mask * _pred_t.long()
                     inputs_t += (1 - exposure_mask.float()).long() \
-                                 * inputs[t+1, :]
+                        * inputs[t+1, :]
+
                 else:
                     inputs_t = inputs[t+1, :]
+
             timer.chkpt("next_input")
             gtimer.chkpt("step: %d" % t, append="\n")
+            t += 1
+            if t >= input_size:
+                break
 
         # backpropagation (& typical debug prints)
         if self.training:
@@ -672,30 +776,34 @@ class ReinforcedDecoder(_Module):
             nonan(state.hidden[0], "sth0")
             nonan(state.hidden[1], "sth1")
             #nonan(self.embeddings.full_embedding.weight, "emb_weight")
-            #loss.backward()
+            # loss.backward()
             # print("decoder post-bw: ")
             nonan(state.hidden[0], "sth0")
             nonan(state.hidden[1], "sth1")
             #nonan(self.embeddings.full_embedding.weight, "emb_weight")
-            #print("inp/tgt/pred/ipred")
+            # print("inp/tgt/pred/ipred")
             pred0 = torch.stack(preds, 0)[:, 0]
-            ipred0 = torch.stack(ipreds, 0)[:, 0]
+            # ipred0 = torch.stack(ipreds, 0)[:, 0]
             #print(torch.stack([inputs[:, 0], tgt[:, 0], pred0, ipred0], 1))
-            #print("copy")
+            # print("copy")
             #print(torch.stack(switchs, 0)[:, 0])
-            #print("attn")
+            # print("attn")
             #print(torch.stack(attns, 0)[:, 0, :])
 
         gtimer.stop("backward", append="\n")
         state.update_state(hidden, None, None)
         if not ret_hists:
-            return loss, stats, state, scores, attns
+            return loss, stats, state, scores, attns, preds
         return stats, state, scores, attns, hd_history, E_hist
 
 
 class ReinforcedModel(onmt.Models.NMTModel):
     def __init__(self, encoder, decoder, multigpu=False):
         super(ReinforcedModel, self).__init__(encoder, decoder)
+        self.use_rl = True
+        self.rl_only = False
+        self.rouge = RougeScorer()
+        self.gamma = 0.9984
 
     def forward(self, src, tgt, src_lengths, batch, loss_compute,
                 dec_state=None):
@@ -715,9 +823,30 @@ class ReinforcedModel(onmt.Models.NMTModel):
                                                     enc_hidden=enc_hidden,
                                                     context=enc_out)
         state = enc_state if dec_state is None else dec_state
-        loss, stats, hidden, _, _ = self.decoder(tgt[:-1], src, enc_out,
-                                           state, batch, loss_compute,
-                                           tgt=tgt[1:])
+
+        loss, stats, hidden, _, _, preds = self.decoder(tgt[:-1], src, enc_out,
+                                                        state, batch, loss_compute,
+                                                        tgt=tgt[1:])
+
+        # print("First decoder pass", loss.size(), len(preds), preds[0].size())
+
+        if self.use_rl:
+            loss2, stats2, hidden2, _, _, preds2 = self.decoder(tgt[:-1], src, enc_out,
+                                                                state, batch, loss_compute,
+                                                                tgt=tgt[1:],
+                                                                sampling=True)
+
+            # print("2nd decoder pass", loss2.size(), len(preds2), preds2[0].size())
+
+            sample_preds = torch.stack(preds2, 1)
+            greedy_preds = torch.stack(preds, 1)
+            metric = self.rouge.score(sample_preds, greedy_preds, tgt[1:].t())
+            metric = torch.autograd.Variable(metric).cuda()
+            rl_loss = (loss2 * metric).sum()
+            if self.rl_only:
+                loss = rl_loss
+            else:
+                loss = (self.gamma * rl_loss) - ((1 - self.gamma * loss))
 
         return loss, stats, state
 
@@ -725,6 +854,7 @@ class ReinforcedModel(onmt.Models.NMTModel):
 class DummyGenerator:
     """Hacky way to ensure compatibility
     """
+
     def dummy_pass(self, *args, **kwargs):
         pass
 

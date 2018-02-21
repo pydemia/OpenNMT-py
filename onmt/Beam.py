@@ -76,19 +76,19 @@ class Beam(object):
         t = len(self.nextYs)
         b = self.nextYs[0].size(0)
 
-
         # Sum the previous scores.
         if len(self.prevKs) > 0:
             beamLk = wordLk + self.scores.unsqueeze(1).expand_as(wordLk)
 
             if t > 2:
-                sentences = torch.stack(self.hyps, 0) # [beam_size x t]
+                sentences = torch.stack(self.hyps, 0)  # [beam_size x t]
                 assert_size(sentences, [b, t])
 
                 last_bigram = sentences[:, -2:]
                 assert_size(last_bigram, [b, 2])
 
-                match_1 = (last_bigram.unsqueeze(2) == sentences.unsqueeze(1)).float()
+                match_1 = (last_bigram.unsqueeze(2) ==
+                           sentences.unsqueeze(1)).float()
                 assert_size(match_1, [b, 2, t])
 
                 match_2 = match_1[:, 0, :-1] * match_1[:, 1, 1:]
@@ -106,10 +106,12 @@ class Beam(object):
                 assert_size(trigram_candidate_mask, [b, t])
 
                 penalty = _zeros(wordLk.size())
-                penalty.scatter_add_(1, sentences, trigram_candidate_mask).gt_(0).float()
+                penalty.scatter_add_(
+                    1, sentences, trigram_candidate_mask).gt_(0).float()
 
                 # if last two tokens are equal, penalize this token
-                last2_eq = (sentences[:, -1] == sentences[:, -2]).unsqueeze(1).float()
+                last2_eq = (sentences[:, -1] ==
+                            sentences[:, -2]).unsqueeze(1).float()
                 last1 = sentences[:, -1].contiguous().view(-1, 1)
                 penalty.scatter_add_(1, last1, last2_eq)
                 assert_size(penalty, list(wordLk.size()))
@@ -195,6 +197,7 @@ class GNMTGlobalScorer(object):
     """
     Google NMT ranking score from Wu et al.
     """
+
     def __init__(self, alpha, beta):
         self.alpha = alpha
         self.beta = beta

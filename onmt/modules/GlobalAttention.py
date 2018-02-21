@@ -39,13 +39,14 @@ class GlobalAttention(nn.Module):
     $$a_j = softmax(v_a^T \tanh(W_a q + U_a h_j) )$$.
 
     """
+
     def __init__(self, dim, coverage=False, attn_type="dot"):
         super(GlobalAttention, self).__init__()
 
         self.dim = dim
         self.attn_type = attn_type
         assert (self.attn_type in ["dot", "general", "mlp"]), (
-                "Please select a valid attention type.")
+            "Please select a valid attention type.")
 
         if self.attn_type == "general":
             self.linear_in = nn.Linear(dim, dim, bias=False)

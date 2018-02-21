@@ -191,6 +191,7 @@ def train_opts(parser):
     parser.add_argument('-reinforced', action="store_true",
                         help="""WIP Use Reinforced model of Paulus 2017""")
 
+
 def preprocess_opts(parser):
     # Dictionary Options
     parser.add_argument('-src_vocab_size', type=int, default=50000,

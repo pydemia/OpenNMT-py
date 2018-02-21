@@ -9,6 +9,7 @@ class ImageEncoder(nn.Module):
     """
     Encoder recurrent neural network for Images.
     """
+
     def __init__(self, num_layers, bidirectional, rnn_size, dropout):
         """
         Args:

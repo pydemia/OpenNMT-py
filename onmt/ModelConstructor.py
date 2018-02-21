@@ -9,10 +9,10 @@ import onmt.Models
 import onmt.modules
 from onmt.IO import ONMTDataset
 from onmt.Models import NMTModel, MeanEncoder, RNNEncoder, \
-                        StdRNNDecoder, InputFeedRNNDecoder
+    StdRNNDecoder, InputFeedRNNDecoder
 from onmt.modules import Embeddings, ImageEncoder, CopyGenerator, \
-                         TransformerEncoder, TransformerDecoder, \
-                         CNNEncoder, CNNDecoder, PartialEmbedding
+    TransformerEncoder, TransformerDecoder, \
+    CNNEncoder, CNNDecoder, PartialEmbedding
 
 
 def make_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
@@ -136,7 +136,7 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
                                model_opt.brnn,
                                model_opt.rnn_size,
                                model_opt.dropout)
-    
+
     """
         Super Experimental Tweak for Partial Embedding
         Given that we built the vocabulary with share_vocab
@@ -146,13 +146,15 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     from collections import Counter
     # TODO dont hardcode
     tgt_vocab_size = 50000
-    print("[WARNING] Tgt vocab size is cut to the hardcoded value: %d") 
-    sub_counter = Counter({_[0]: _[1] for _ in tgt_counter.most_common(tgt_vocab_size)})
+    print("[WARNING] Tgt vocab size is cut to the hardcoded value: %d")
+    sub_counter = Counter({_[0]: _[1]
+                           for _ in tgt_counter.most_common(tgt_vocab_size)})
     import torchtext.vocab
     tgt_vocab = torchtext.vocab.Vocab(sub_counter)
-    tgt_vocab = torchtext.vocab.Vocab(sub_counter, specials=['<blank>', '<s>', '</s>'])
+    tgt_vocab = torchtext.vocab.Vocab(
+        sub_counter, specials=['<blank>', '<s>', '</s>'])
     fields["tgt"].vocab = tgt_vocab
-
+    print(tgt_vocab.itos[:10])
     # Make decoder.
     tgt_dict = fields["tgt"].vocab
     # TODO: prepare for a future where tgt features are possible.
@@ -205,9 +207,9 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
                 p.data.uniform_(-model_opt.param_init, model_opt.param_init)
 
         model.encoder.embeddings.load_pretrained_vectors(
-                model_opt.pre_word_vecs_enc, model_opt.fix_word_vecs_enc)
+            model_opt.pre_word_vecs_enc, model_opt.fix_word_vecs_enc)
         model.decoder.embeddings.load_pretrained_vectors(
-                model_opt.pre_word_vecs_dec, model_opt.fix_word_vecs_dec)
+            model_opt.pre_word_vecs_dec, model_opt.fix_word_vecs_dec)
 
     # add the generator to the module (does this register the parameter?)
     model.generator = generator

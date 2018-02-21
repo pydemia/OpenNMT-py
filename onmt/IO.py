@@ -59,6 +59,7 @@ def merge_vocabs(vocabs, vocab_size=None):
                                  specials=[PAD_WORD, BOS_WORD, EOS_WORD],
                                  max_size=vocab_size)
 
+
 def trunc_vocab(vocab, trunc_size):
     return torchtext.vocab.Vocab(vocab.freqs,
                                  specials=[PAD_WORD, BOS_WORD, EOS_WORD],
@@ -176,7 +177,7 @@ class ONMTDataset(torchtext.data.Dataset):
                 if "tgt" in example:
                     tgt = example["tgt"]
                     mask = torch.LongTensor(
-                            [0] + [src_vocab.stoi[w] for w in tgt] + [0])
+                        [0] + [src_vocab.stoi[w] for w in tgt] + [0])
                     example["alignment"] = mask
                 yield example
 
@@ -343,7 +344,7 @@ class ONMTDataset(torchtext.data.Dataset):
         fields["indices"] = torchtext.data.Field(
             use_vocab=False, tensor_type=torch.LongTensor,
             sequential=False)
-        
+
         return fields
 
     @staticmethod
@@ -367,7 +368,8 @@ class ONMTDataset(torchtext.data.Dataset):
             if opt.trunc_tgt_vocab == -1:
                 fields["tgt"].vocab = merged_vocab
             else:
-                fields["tgt"].vocab = trunc_vocab(merged_vocab, opt.trunc_tgt_vocab)
+                fields["tgt"].vocab = trunc_vocab(
+                    merged_vocab, opt.trunc_tgt_vocab)
 
 
 def load_image_libs():
