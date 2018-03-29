@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import os
+
 from flask import Flask, jsonify, request
 from onmt.translate import TranslationServer, ServerModelError
 
@@ -12,7 +13,6 @@ app = Flask(__name__)
 translation_server = TranslationServer(
     models_root="./available_models",
     available_models="./available_models/conf.json")
-
 
 @app.route('/models', methods=['GET'])
 def get_models():
@@ -103,4 +103,5 @@ def to_gpu(model_id):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
+    translation_server.start()
+    app.run(debug=True, host='0.0.0.0', use_reloader=False)

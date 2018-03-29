@@ -49,7 +49,9 @@ class TranslationServer():
         self.available_models = available_models
 
         self.next_id = 0
-        with open(available_models) as f:
+
+    def start(self):
+        with open(self.available_models) as f:
             self.confs = json.load(f)
 
         for i, conf in enumerate(self.confs["models"]):
@@ -127,7 +129,6 @@ class TranslationServer():
 class ServerModel:
     def __init__(self, opt, model_id, load=False, timeout=-1, on_timeout="to_cpu"):
         self.opt = self.parse_opt(opt)
-        self.timer = Timer()
         self.timeout = timeout
         self.unload_timer = None
         self.user_opt = opt
@@ -160,8 +161,9 @@ class ServerModel:
         return hasattr(self, 'translator')
 
     def load(self):
+        timer = Timer()
         print("Loading model %d" % self.model_id)
-        self.timer.start()
+        timer.start()
         self.out_file = io.StringIO()
         try:
             self.translator = onmt.translate.Translator(self.opt,
@@ -170,7 +172,7 @@ class ServerModel:
         except RuntimeError as e:
             raise ServerModelError("Runtime Error: %s" % str(e))
 
-        self.load_time = self.timer.tick()
+        self.load_time = timer.tick()
         self.reset_unload_timer()
 
     def run(self, inputs):
@@ -178,15 +180,16 @@ class ServerModel:
            Inputs must be formatted as a list of sequence
            e.g. [{"src": "..."},{"src": ...}]
         """
+        timer = Timer()
         print("Running translation using %d" % self.model_id)
 
-        self.timer.start()
+        timer.start()
         if not self.loaded:
             self.load()
-            self.timer.tick(name="load")
+            timer.tick(name="load")
         elif self.opt.cuda:
             self.to_gpu()
-            self.timer.tick(name="to_gpu")
+            timer.tick(name="to_gpu")
 
         # NOTE: the translator exept a filepath as parameter
         #       therefore we write the data as a temp file.
@@ -196,18 +199,19 @@ class ServerModel:
         with codecs.open(src_path, 'w', 'utf-8') as f:
             for inp in inputs:
                 f.write(inp['src'] + "\n")
-        self.timer.tick(name="writing")
+        timer.tick(name="writing")
         try:
             self.translator.translate(None, src_path, None)
         except RuntimeError as e:
             raise ServerModelError("Runtime Error: %s" % str(e))
 
-        self.timer.tick(name="translation")
+        timer.tick(name="translation")
         print("Model %d, translation time: %s" %
-              (self.model_id, str(self.timer.times)))
+              (self.model_id, str(timer.times)))
         self.reset_unload_timer()
         result = self.out_file.getvalue().split("\n")
-        return result, self.timer.times
+        self.clear_out_file()
+        return result, timer.times
 
     def do_timeout(self):
         if self.on_timeout == "unload":
@@ -249,4 +253,10 @@ class ServerModel:
             torch.cuda.empty_cache()
 
     def to_gpu(self):
+        torch.cuda.set_device(self.opt.gpu)
         self.translator.model.cuda()
+
+    def clear_out_file(self):
+        # Creating a new object is faster
+        self.out_file = io.StringIO()
+        self.translator.out_file = self.out_file
