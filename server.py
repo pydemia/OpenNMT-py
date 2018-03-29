@@ -4,12 +4,18 @@ import os
 from flask import Flask, jsonify, request
 from onmt.translate import TranslationServer, ServerModelError
 
+ROOT = "/translator"
 AVAILABLE_MODEL_PATH = "./available_models"
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
 
+def prefix_route(route_function, prefix='', mask='{0}{1}'):
+    def newroute(route, *args, **kwargs):
+        return route_function(mask.format(prefix, route), *args, **kwargs)
+    return newroute
 
 app = Flask(__name__)
+app.route = prefix_route(app.route, ROOT)
 translation_server = TranslationServer(
     models_root="./available_models",
     available_models="./available_models/conf.json")
@@ -62,26 +68,22 @@ def unload_model(model_id):
     return jsonify(out)
 
 
-@app.route('/translate/<int:model_id>', methods=['POST'])
-def translate(model_id):
+@app.route('/translate', methods=['POST'])
+def translate():
     global translation_server
     data = request.get_json(force=True)
-    out = {'model_id': model_id}
+    out = {}
 
+    inputs = data
     try:
-        inputs = data['inputs']
-    except KeyError:
-        out['error'] = "Parameter 'inputs' is required"
+        # NOTE Ubiqus adhoc model_id is in the inputs
+        translation, times = translation_server.run_model(-9999, inputs)
+        out['result'] = translation
+        out['status'] = STATUS_OK
+        out['time'] = times
+    except ServerModelError as e:
+        out['error'] = str(e)
         out['status'] = STATUS_ERROR
-    else:
-        try:
-            translation, times = translation_server.run_model(model_id, inputs)
-            out['result'] = translation
-            out['status'] = STATUS_OK
-            out['time'] = times
-        except ServerModelError as e:
-            out['error'] = str(e)
-            out['status'] = STATUS_ERROR
 
     return jsonify(out)
 
