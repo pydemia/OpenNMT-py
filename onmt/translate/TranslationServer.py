@@ -103,7 +103,6 @@ class TranslationServer():
            e.g. [{"src": "..."},{"src": ...}]
         """
         model_id = inputs[0].get("id", 0)
-        inputs = [inputs[0]]
         if model_id in self.models and self.models[model_id] is not None:
             return self.models[model_id].run(inputs)
         else:
