@@ -222,11 +222,15 @@ class Trainer(object):
             tgt = onmt.io.make_features(batch, 'tgt')
 
             # F-prop through the model.
-            outputs, attns, _ = self.model(src, tgt, src_lengths)
+            if type(self.model) == onmt.Reinforced.ReinforcedModel:
+                loss, batch_stats, dec_state = self.model(src, tgt,
+                        src_lengths, batch, self.train_loss, dec_state)                
+            else:
+                outputs, attns, _ = self.model(src, tgt, src_lengths)
 
-            # Compute loss.
-            batch_stats = self.valid_loss.monolithic_compute_loss(
-                    batch, outputs, attns)
+                # Compute loss.
+                batch_stats = self.valid_loss.monolithic_compute_loss(
+                        batch, outputs, attns)
 
             # Update statistics.
             stats.update(batch_stats)
@@ -302,13 +306,17 @@ class Trainer(object):
                 # 2. F-prop all but generator.
                 if self.grad_accum_count == 1:
                     self.model.zero_grad()
-                outputs, attns, dec_state = \
+                if type(self.model) == onmt.Reinforced.ReinforcedModel:
+                    loss, batch_stats, dec_state = self.model(src, tgt,
+                        src_lengths, batch, self.train_loss, dec_state)
+                else:
+                    outputs, attns, dec_state = \
                     self.model(src, tgt, src_lengths, dec_state)
 
-                # 3. Compute loss in shards for memory efficiency.
-                batch_stats = self.train_loss.sharded_compute_loss(
-                        batch, outputs, attns, j,
-                        trunc_size, self.shard_size, normalization)
+                    # 3. Compute loss in shards for memory efficiency.
+                    batch_stats = self.train_loss.sharded_compute_loss(
+                            batch, outputs, attns, j,
+                            trunc_size, self.shard_size, normalization)
 
                 # 4. Update the parameters and statistics.
                 if self.grad_accum_count == 1:

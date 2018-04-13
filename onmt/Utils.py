@@ -11,6 +11,17 @@ def aeq(*args):
         "Not all arguments have the same value: " + str(args)
 
 
+def assert_size(v, size_list):
+    """Check that variable(s) have size() == size_list
+       v may be a variable, a tensor or a list
+    """
+    if type(v) not in [tuple, list]:
+        v = [v] 
+
+    for variable in v:
+        aeq(list(v.size()), size_list)
+
+
 def sequence_mask(lengths, max_len=None):
     """
     Creates a boolean mask from sequence lengths.

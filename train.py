@@ -242,11 +242,12 @@ def train_model(model, fields, optim, data_type, model_opt):
     norm_method = opt.normalization
     grad_accum_count = opt.accum_count
 
-    if model.model_type == "Reinforced":
-        trainer = onmt.Reinforced.RTrainer(model, train_loss,
-                                           valid_loss, optim, trunc_size)
-    else:
-        trainer = onmt.Trainer(model, train_loss, valid_loss, optim,
+    # TODO TODEL
+    # if model.model_type == "Reinforced":
+    #     trainer = onmt.Reinforced.RTrainer(model, train_loss,
+    #                                        valid_loss, optim, trunc_size)
+    # else:
+    trainer = onmt.Trainer(model, train_loss, valid_loss, optim,
                                trunc_size, shard_size, data_type,
                                norm_method, grad_accum_count)
 

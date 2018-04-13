@@ -306,7 +306,7 @@ class Translator(object):
                     inp.gt(len(self.fields["tgt"].vocab) - 1), 0)
 
             # Run one step.
-            if self.model.model_type == "Reinforced":
+            if type(self.model) == onmt.Reinforced.ReinforcedModel:
                 # inp is [n x batch_size * beam_size]
                 # src is [src_len x batch_size x 1]
                 # we use _src [src_len x batch_size * beam_size]

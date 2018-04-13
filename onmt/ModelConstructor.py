@@ -204,7 +204,7 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     # Make Generator.
     if model_opt.reinforced:
         # NOTE: we could maybe use copy_attn?!
-        generator = onmt.Reinforced.PointerGenerator(model_opt,
+        generator = onmt.Reinforced.PointerGenerator(model_opt.rnn_size * 3,
                                                      tgt_vocab,
                                                      tgt_embeddings)
     elif model_opt.copy_attn:

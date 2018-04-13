@@ -8,6 +8,58 @@ import onmt.io
 from onmt.Utils import aeq
 
 
+class PointerGenerator(CopyGenerator):
+    """PointerGenerator as described in Paulus et al., (2017)
+       It is similar to the `CopyGenerator` with the difference that it
+       shares weights with the target embedding matrix.
+    """
+    def __init__(self, input_size, tgt_vocab, embeddings):
+        super(PointerGenerator, self).__init__(opt.rnn_size, tgt_vocab)
+        self.input_size = input_size
+        self.embeddings = embeddings
+        W_emb = embeddings.weight
+        self.linear_copy = nn.Linear(self.input_size, 1)
+
+        n_emb, emb_dim = list(W_emb.size())
+
+        # (2.4) Sharing decoder weights
+        self.emb_proj = nn.Linear(emb_dim, self.input_size, bias=False)
+        self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
+        self.tanh = nn.Tanh()
+        self._W_out = None
+
+        # refresh W_out matrix after each backward pass
+        self.register_backward_hook(self.refresh_W_out)
+
+    def refresh_W_out(self, *args, **kwargs):
+        self.W_out(True)
+
+    def W_out(self, refresh=False):
+        """ Sect. (2.4) Sharing decoder weights
+            The function returns the W_out matrix which is a projection of the
+            target embedding weight matrix.
+            The W_out matrix needs to recalculated after each backward pass,
+            which is done automatically. This is done to avoid calculating it
+            at each decoding step (which usually leads to OOM)
+
+            Returns:
+                W_out (FloaTensor): [n_emb, 3*dim]
+        """
+        if self._W_out is None or refresh:
+            _ = self.emb_proj(self.embeddings.weight)
+            self._W_out = self.tanh(_)
+        return self._W_out
+
+    def linear(self, V):
+        """Calculate the output projection of `v` as in eq. (9)
+            Args:
+                V (FloatTensor): [bs, 3*dim]
+            Returns:
+                logits (FloatTensor): logits = W_out * V + b_out, [3*dim]
+        """
+        W = self.W_out()
+
+
 class CopyGenerator(nn.Module):
     """Generator module that additionally considers copying
     words directly from the source.
@@ -216,3 +268,116 @@ class CopyGeneratorLossCompute(onmt.Loss.LossComputeBase):
             loss = loss.sum()
 
         return loss, stats
+
+class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
+    def __init__(self, generator, tgt_vocab, force_copy, eps=1e-20):
+        super(EachStepGeneratorLossCompute, self).__init__(
+            generator, tgt_vocab, force_copy, eps)
+        self.tgt_vocab = tgt_vocab
+
+    def remove_oov(self, pred):
+        """Remove out-of-vocabulary tokens
+           usefull when we wants to use predictions (that contains oov due
+           to copy mechanisms) as next input.
+           i.e. pred[i] == 0 foreach i such as pred[i] > tgt_vocab_size
+        """
+        return pred.masked_fill_(pred.gt(len(self.tgt_vocab) - 1), 0)
+
+    def compute_loss(self, batch, output, target, copy_attn, align, src,
+                     prediction_type="greedy"):
+        """
+            align:      [bs]
+            target:     [bs]
+            copy_attn:  [bs x src_len]
+            output:     [bs x 3*dim]
+        """
+        align = align.view(-1)
+        target = target.view(-1)
+        # GENERATOR: generating scores
+        # scores: [bs x vocab + c_vocab]
+        scores = self.generator(
+            output,
+            copy_attn,
+            batch.src_map)
+        nonan(scores, "compute_loss.scores")
+
+        # Experimental:
+        # fast copy collapse:
+        # Dataset.collapse_copy_scores is very usefull in order
+        # to sum copy scores for tokens that are in vocabulary
+        # but using dataset.collapse_copy_scores at each step is
+        # inefficient.
+        # We do the same only using tensor operations
+        _src_map = batch.src_map.float().data.cuda()
+        _scores = scores.data.clone()
+
+        _src = src.clone().data
+        offset = len(self.tgt_vocab)
+        src_l, bs, c_vocab = _src_map.size()
+
+        # [bs x src_len], mask of src_idx being in tgt_vocab
+        src_invoc_mask = (_src.lt(offset) * _src.gt(1)).float()
+
+        # [bs x c_voc], mask of cvocab_idx related to invoc src token
+        cvoc_invoc_mask = src_invoc_mask.unsqueeze(1) \
+                                        .bmm(_src_map.transpose(0, 1)) \
+                                        .squeeze(1) \
+                                        .gt(0)
+
+        # [bs x src_len], copy scores of invoc src tokens
+        # [bs x 1 x cvocab] @bmm [bs x cvocab x src_len] = [bs x 1 x src_len]
+        src_copy_scores = _scores[:, offset:].unsqueeze(1) \
+                                             .bmm(_src_map.transpose(0, 1)
+                                                          .transpose(1, 2)) \
+                                             .squeeze()
+
+        # [bs x src_len], invoc src tokens, or 1 (=pad)
+        src_token_invoc = _src.clone().masked_fill_(1-src_invoc_mask.byte(), 1)
+
+        src_token_invoc = src_token_invoc.view(bs, -1)
+        src_copy_scores = src_copy_scores.view(bs, -1)
+
+        _scores.scatter_add_(
+            1, src_token_invoc.long(), src_copy_scores)
+
+        _scores[:, offset:] *= (1-cvoc_invoc_mask.float())
+        _scores[:, 1] = 0
+
+        _scores_data = _scores
+        scores_data = _scores_data
+        #
+        # CRITERION & PREDICTION: Predicting & Calculating the loss
+        #
+        if prediction_type == "greedy":
+            _, pred = scores_data.max(1)
+            pred = torch.autograd.Variable(pred)
+            loss = self.criterion(scores, align, target).sum()
+            loss_data = loss.data.clone()
+
+        elif prediction_type == "sample":
+            d = torch.distributions.Categorical(
+                scores_data[:, :len(self.tgt_vocab)])
+            # TODO check if this hack is mandatory
+            # in this context target=1 if continue generation, 0 else:
+            # kinda hacky but seems to work
+            pred = torch.autograd.Variable(d.sample()) * target
+
+            # NOTE we use collapsed scores that account copy
+            loss = self.criterion(scores, align, pred)
+            loss_data = loss.sum().data
+        else:
+            raise ValueError("Incorrect prediction_type %s" % prediction_type)
+        nonan(loss, "loss")
+        nonan(pred, "pred")
+        pred.cuda()
+
+        #
+        # FIXING TARGET
+        #
+        target_data = target.data.clone()
+        correct_mask = target_data.eq(0) * align.data.ne(0)
+        correct_copy = (align.data + len(self.tgt_vocab)) * correct_mask.long()
+        target_data = target_data + correct_copy
+
+        stats = self._stats(loss_data, scores_data, target_data)
+        return loss, pred, stats
