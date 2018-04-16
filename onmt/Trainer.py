@@ -29,6 +29,7 @@ class Statistics(object):
     * perplexity
     * elapsed time
     """
+
     def __init__(self, loss=0, n_words=0, n_correct=0):
         self.loss = loss
         self.n_words = n_words
@@ -174,15 +175,15 @@ class Trainer(object):
 
             if accum == self.grad_accum_count:
                 self._gradient_accumulation(
-                        true_batchs, total_stats,
-                        report_stats, normalization)
+                    true_batchs, total_stats,
+                    report_stats, normalization)
 
                 if report_func is not None:
                     report_stats = report_func(
-                            epoch, idx, num_batches,
-                            self.progress_step,
-                            total_stats.start_time, self.optim.lr,
-                            report_stats)
+                        epoch, idx, num_batches,
+                        self.progress_step,
+                        total_stats.start_time, self.optim.lr,
+                        report_stats)
                     self.progress_step += 1
 
                 true_batchs = []
@@ -192,8 +193,8 @@ class Trainer(object):
 
         if len(true_batchs) > 0:
             self._gradient_accumulation(
-                    true_batchs, total_stats,
-                    report_stats, normalization)
+                true_batchs, total_stats,
+                report_stats, normalization)
             true_batchs = []
 
         return total_stats
@@ -224,13 +225,16 @@ class Trainer(object):
             # F-prop through the model.
             if type(self.model) == onmt.Reinforced.ReinforcedModel:
                 loss, batch_stats, dec_state = self.model(src, tgt,
-                        src_lengths, batch, self.train_loss, dec_state)                
+                                                          src_lengths,
+                                                          batch,
+                                                          self.train_loss,
+                                                          dec_state=None)
             else:
                 outputs, attns, _ = self.model(src, tgt, src_lengths)
 
                 # Compute loss.
                 batch_stats = self.valid_loss.monolithic_compute_loss(
-                        batch, outputs, attns)
+                    batch, outputs, attns)
 
             # Update statistics.
             stats.update(batch_stats)
@@ -308,15 +312,18 @@ class Trainer(object):
                     self.model.zero_grad()
                 if type(self.model) == onmt.Reinforced.ReinforcedModel:
                     loss, batch_stats, dec_state = self.model(src, tgt,
-                        src_lengths, batch, self.train_loss, dec_state)
+                                                              src_lengths,
+                                                              batch,
+                                                              self.train_loss,
+                                                              dec_state)
                 else:
                     outputs, attns, dec_state = \
-                    self.model(src, tgt, src_lengths, dec_state)
+                        self.model(src, tgt, src_lengths, dec_state)
 
                     # 3. Compute loss in shards for memory efficiency.
                     batch_stats = self.train_loss.sharded_compute_loss(
-                            batch, outputs, attns, j,
-                            trunc_size, self.shard_size, normalization)
+                        batch, outputs, attns, j,
+                        trunc_size, self.shard_size, normalization)
 
                 # 4. Update the parameters and statistics.
                 if self.grad_accum_count == 1:

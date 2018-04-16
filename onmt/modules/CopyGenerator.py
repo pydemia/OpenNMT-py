@@ -8,58 +8,6 @@ import onmt.io
 from onmt.Utils import aeq
 
 
-class PointerGenerator(CopyGenerator):
-    """PointerGenerator as described in Paulus et al., (2017)
-       It is similar to the `CopyGenerator` with the difference that it
-       shares weights with the target embedding matrix.
-    """
-    def __init__(self, input_size, tgt_vocab, embeddings):
-        super(PointerGenerator, self).__init__(opt.rnn_size, tgt_vocab)
-        self.input_size = input_size
-        self.embeddings = embeddings
-        W_emb = embeddings.weight
-        self.linear_copy = nn.Linear(self.input_size, 1)
-
-        n_emb, emb_dim = list(W_emb.size())
-
-        # (2.4) Sharing decoder weights
-        self.emb_proj = nn.Linear(emb_dim, self.input_size, bias=False)
-        self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
-        self.tanh = nn.Tanh()
-        self._W_out = None
-
-        # refresh W_out matrix after each backward pass
-        self.register_backward_hook(self.refresh_W_out)
-
-    def refresh_W_out(self, *args, **kwargs):
-        self.W_out(True)
-
-    def W_out(self, refresh=False):
-        """ Sect. (2.4) Sharing decoder weights
-            The function returns the W_out matrix which is a projection of the
-            target embedding weight matrix.
-            The W_out matrix needs to recalculated after each backward pass,
-            which is done automatically. This is done to avoid calculating it
-            at each decoding step (which usually leads to OOM)
-
-            Returns:
-                W_out (FloaTensor): [n_emb, 3*dim]
-        """
-        if self._W_out is None or refresh:
-            _ = self.emb_proj(self.embeddings.weight)
-            self._W_out = self.tanh(_)
-        return self._W_out
-
-    def linear(self, V):
-        """Calculate the output projection of `v` as in eq. (9)
-            Args:
-                V (FloatTensor): [bs, 3*dim]
-            Returns:
-                logits (FloatTensor): logits = W_out * V + b_out, [3*dim]
-        """
-        W = self.W_out()
-
-
 class CopyGenerator(nn.Module):
     """Generator module that additionally considers copying
     words directly from the source.
@@ -269,6 +217,61 @@ class CopyGeneratorLossCompute(onmt.Loss.LossComputeBase):
 
         return loss, stats
 
+
+class PointerGenerator(CopyGenerator):
+    """PointerGenerator as described in Paulus et al., (2017)
+       It is similar to the `CopyGenerator` with the difference that it
+       shares weights with the target embedding matrix.
+    """
+    def __init__(self, input_size, tgt_vocab, embeddings):
+        super(PointerGenerator, self).__init__(input_size, tgt_vocab)
+        self.input_size = input_size
+        self.embeddings = embeddings
+        W_emb = embeddings.weight
+        self.linear_copy = nn.Linear(self.input_size, 1)
+
+        n_emb, emb_dim = list(W_emb.size())
+
+        # (2.4) Sharing decoder weights
+        self.emb_proj = nn.Linear(emb_dim, self.input_size, bias=False)
+        self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
+        self.tanh = nn.Tanh()
+        self._W_out = None
+
+        # refresh W_out matrix after each backward pass
+        self.register_backward_hook(self.refresh_W_out)
+
+    def refresh_W_out(self, *args, **kwargs):
+        self.W_out(True)
+
+    def W_out(self, refresh=False):
+        """ Sect. (2.4) Sharing decoder weights
+            The function returns the W_out matrix which is a projection of the
+            target embedding weight matrix.
+            The W_out matrix needs to recalculated after each backward pass,
+            which is done automatically. This is done to avoid calculating it
+            at each decoding step (which usually leads to OOM)
+
+            Returns:
+                W_out (FloaTensor): [n_emb, 3*dim]
+        """
+        if self._W_out is None or refresh:
+            _ = self.emb_proj(self.embeddings.weight)
+            self._W_out = self.tanh(_)
+        return self._W_out
+
+    def linear(self, V):
+        """Calculate the output projection of `v` as in eq. (9)
+            Args:
+                V (FloatTensor): [bs, 3*dim]
+            Returns:
+                logits (FloatTensor): logits = W_out * V + b_out, [3*dim]
+        """
+        W = self.W_out()
+        logits = (W.matmul(V.t()) + self.b_out).t()
+        return logits
+
+
 class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
     def __init__(self, generator, tgt_vocab, force_copy, eps=1e-20):
         super(EachStepGeneratorLossCompute, self).__init__(
@@ -299,7 +302,7 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             output,
             copy_attn,
             batch.src_map)
-        nonan(scores, "compute_loss.scores")
+        # nonan(scores, "compute_loss.scores")
 
         # Experimental:
         # fast copy collapse:
@@ -367,8 +370,8 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             loss_data = loss.sum().data
         else:
             raise ValueError("Incorrect prediction_type %s" % prediction_type)
-        nonan(loss, "loss")
-        nonan(pred, "pred")
+        # nonan(loss, "loss")
+        # nonan(pred, "pred")
         pred.cuda()
 
         #

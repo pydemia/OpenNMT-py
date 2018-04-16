@@ -4,7 +4,7 @@ from onmt.modules.GlobalAttention import GlobalAttention
 from onmt.modules.ConvMultiStepAttention import ConvMultiStepAttention
 from onmt.modules.ImageEncoder import ImageEncoder
 from onmt.modules.AudioEncoder import AudioEncoder
-from onmt.modules.CopyGenerator import CopyGenerator, PointerGenerator \
+from onmt.modules.CopyGenerator import CopyGenerator, PointerGenerator, \
     CopyGeneratorLossCompute, EachStepGeneratorLossCompute
 from onmt.modules.StructuredAttention import MatrixTree
 from onmt.modules.Transformer import \
@@ -37,7 +37,7 @@ __all__ = [EncoderBase, MeanEncoder, RNNDecoderBase, InputFeedRNNDecoder,
            MatrixTree, WeightNormConv2d, ConvMultiStepAttention,
            CNNEncoder, CNNDecoder, StackedLSTM, StackedGRU,
            context_gate_factory, CopyGeneratorLossCompute, AudioEncoder,
-           PartialEmbedding]
+           PartialEmbedding, IntraAttention]
 
 if can_use_sru:
     __all__.extend([SRU, check_sru_requirement])

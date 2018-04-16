@@ -11,8 +11,8 @@ import onmt.modules
 import onmt.Models
 import onmt.Trainer
 import onmt.Loss
-from onmt.modules import CopyGeneratorLossCompute, CopyGenerator
-from onmt.Utils import assert_size
+from onmt.modules import IntraAttention
+
 
 class RougeScorer:
     def __init__(self):
@@ -67,7 +67,7 @@ class RougeScorer:
 #         super(EachStepGeneratorLossCompute, self).__init__(
 #             generator, tgt_vocab, force_copy, eps)
 #         self.tgt_vocab = tgt_vocab
-# 
+#
 #     def remove_oov(self, pred):
 #         """Remove out-of-vocabulary tokens
 #            usefull when we wants to use predictions (that contains oov due
@@ -75,7 +75,7 @@ class RougeScorer:
 #            i.e. pred[i] == 0 foreach i such as pred[i] > tgt_vocab_size
 #         """
 #         return pred.masked_fill_(pred.gt(len(self.tgt_vocab) - 1), 0)
-# 
+#
 #     def compute_loss(self, batch, output, target, copy_attn, align, src,
 #                      prediction_type="greedy"):
 #         """
@@ -93,7 +93,7 @@ class RougeScorer:
 #             copy_attn,
 #             batch.src_map)
 #         nonan(scores, "compute_loss.scores")
-# 
+#
 #         # Experimental:
 #         # fast copy collapse:
 #         # Dataset.collapse_copy_scores is very usefull in order
@@ -103,39 +103,39 @@ class RougeScorer:
 #         # We do the same only using tensor operations
 #         _src_map = batch.src_map.float().data.cuda()
 #         _scores = scores.data.clone()
-# 
+#
 #         _src = src.clone().data
 #         offset = len(self.tgt_vocab)
 #         src_l, bs, c_vocab = _src_map.size()
-# 
+#
 #         # [bs x src_len], mask of src_idx being in tgt_vocab
 #         src_invoc_mask = (_src.lt(offset) * _src.gt(1)).float()
-# 
+#
 #         # [bs x c_voc], mask of cvocab_idx related to invoc src token
 #         cvoc_invoc_mask = src_invoc_mask.unsqueeze(1) \
 #                                         .bmm(_src_map.transpose(0, 1)) \
 #                                         .squeeze(1) \
 #                                         .gt(0)
-# 
+#
 #         # [bs x src_len], copy scores of invoc src tokens
 #         # [bs x 1 x cvocab] @bmm [bs x cvocab x src_len] = [bs x 1 x src_len]
 #         src_copy_scores = _scores[:, offset:].unsqueeze(1) \
 #                                              .bmm(_src_map.transpose(0, 1)
 #                                                           .transpose(1, 2)) \
 #                                              .squeeze()
-# 
+#
 #         # [bs x src_len], invoc src tokens, or 1 (=pad)
 #         src_token_invoc = _src.clone().masked_fill_(1-src_invoc_mask.byte(), 1)
-# 
+#
 #         src_token_invoc = src_token_invoc.view(bs, -1)
 #         src_copy_scores = src_copy_scores.view(bs, -1)
-# 
+#
 #         _scores.scatter_add_(
 #             1, src_token_invoc.long(), src_copy_scores)
-# 
+#
 #         _scores[:, offset:] *= (1-cvoc_invoc_mask.float())
 #         _scores[:, 1] = 0
-# 
+#
 #         _scores_data = _scores
 #         scores_data = _scores_data
 #         #
@@ -146,14 +146,14 @@ class RougeScorer:
 #             pred = torch.autograd.Variable(pred)
 #             loss = self.criterion(scores, align, target).sum()
 #             loss_data = loss.data.clone()
-# 
+#
 #         elif prediction_type == "sample":
 #             d = torch.distributions.Categorical(
 #                 scores_data[:, :len(self.tgt_vocab)])
 #             # in this context target=1 if continue generation, 0 else:
 #             # kinda hacky but seems to work
 #             pred = torch.autograd.Variable(d.sample()) * target
-# 
+#
 #             # NOTE we use collapsed scores that account copy
 #             loss = self.criterion(scores, align, pred)
 #             loss_data = loss.sum().data
@@ -162,7 +162,7 @@ class RougeScorer:
 #         nonan(loss, "loss")
 #         nonan(pred, "pred")
 #         pred.cuda()
-# 
+#
 #         #
 #         # FIXING TARGET
 #         #
@@ -170,7 +170,7 @@ class RougeScorer:
 #         correct_mask = target_data.eq(0) * align.data.ne(0)
 #         correct_copy = (align.data + len(self.tgt_vocab)) * correct_mask.long()
 #         target_data = target_data + correct_copy
-# 
+#
 #         stats = self._stats(loss_data, scores_data, target_data)
 #         return loss, pred, stats
 
@@ -181,13 +181,13 @@ class RougeScorer:
 #        It uses an older version of the Trainer
 #        The main difference is that we do not compute loss because the decoder
 #        is expected to do it.
-# 
+#
 #     """
-# 
+#
 #     def __init__(self, model, train_loss,
 #                  valid_loss, optim, trunc_size):
 #         self.model = model
-# 
+#
 #         # TODO Remove this
 #         # self.train_iter = train_iter
 #         # self.valid_iter = valid_iter
@@ -195,34 +195,34 @@ class RougeScorer:
 #         self.valid_loss = valid_loss
 #         self.optim = optim
 #         self.trunc_size = trunc_size
-# 
+#
 #         # Set model in training mode.
 #         self.model.train()
-# 
+#
 #     def train(self, train_iter, epoch, report_func=None):
 #         # NOTE quick workaround
 #         self.train_iter = train_iter
 #         total_stats = onmt.Statistics()
 #         report_stats = onmt.Statistics()
-# 
+#
 #         for i, batch in enumerate(self.train_iter):
 #             target_size = batch.tgt.size(0)
 #             # Truncated BPTT
 #             trunc_size = self.trunc_size if self.trunc_size else target_size
-# 
+#
 #             dec_state = None
 #             _, src_lengths = batch.src
-# 
+#
 #             src = onmt.io.make_features(batch, 'src')
 #             tgt_outer = onmt.io.make_features(batch, 'tgt')
 #             report_stats.n_src_words += src_lengths.sum()
 #             alignment = batch.alignment
-# 
+#
 #             for j in range(0, target_size-1, trunc_size):
 #                 # 1. Create truncated target.
 #                 tgt = tgt_outer[j: j + trunc_size]
 #                 batch.alignment = alignment[j + 1: j + trunc_size]
-# 
+#
 #                 # 2. & 3. F-prop and compute loss
 #                 self.model.zero_grad()
 #                 loss, batch_stats, dec_state = self.model(src, tgt,
@@ -233,47 +233,47 @@ class RougeScorer:
 #                 loss.backward()
 #                 # 4. Update the parameters and statistics.
 #                 self.optim.step()
-# 
+#
 #                 total_stats.update(batch_stats)
 #                 report_stats.update(batch_stats)
-# 
+#
 #                 # If truncated, don't backprop fully.
 #                 if dec_state is not None:
 #                     dec_state.detach()
-# 
+#
 #             if report_func is not None:
 #                 report_func(epoch, i, len(self.train_iter),
 #                             total_stats.start_time, self.optim.lr,
 #                             report_stats)
 #                 report_stats = onmt.Statistics()
-# 
+#
 #         return total_stats
-# 
+#
 #     def validate(self, valid_iter):
 #         """ Called for each epoch to validate. """
 #         # NOTE quick workaround
 #         self.valid_iter = valid_iter
-# 
+#
 #         # Set model in validating mode.
 #         self.model.eval()
-# 
+#
 #         stats = onmt.Statistics()
-# 
+#
 #         for batch in self.valid_iter:
 #             _, src_lengths = batch.src
 #             src = onmt.io.make_features(batch, 'src')
 #             tgt = onmt.io.make_features(batch, 'tgt')
-# 
+#
 #             batch.alignment = batch.alignment[1:]
 #             # F-prop through the model.
 #             _, batch_stats, _ = self.model(
 #                 src, tgt, src_lengths, batch, self.valid_loss)
 #             # Update statistics.
 #             stats.update(batch_stats)
-# 
+#
 #         # Set model back to training mode.
 #         self.model.train()
-# 
+#
 #         return stats
 
 
@@ -285,7 +285,7 @@ class RougeScorer:
 #         print("NaN values in %s: %s" % (name, str(d)))
 #         inan = nan.max(0)
 #         print("Occuring at index: ", inan)
-# 
+#
 #         i = inan[1][0]
 #         print("First occurence (with previous/next 5 values): ", d[i-5:i+5, :])
 #         raise ValueError()
@@ -316,15 +316,15 @@ class _Module(nn.Module):
 # class IntraAttention(_Module):
 #     """IntraAttention Module as in sect. (2)
 #     """
-# 
+#
 #     def __init__(self, opt, dim, temporal=False):
 #         super(IntraAttention, self).__init__(opt)
 #         self.dim = dim
 #         self.temporal = temporal
 #         self.linear = nn.Linear(dim, dim, bias=False)
-# 
+#
 #         self.softmax = nn.Softmax(dim=1)
-# 
+#
 #     def forward(self, h_t, h, attn_history=None, mask=None, debug=False):
 #         """
 #         Args:
@@ -342,13 +342,13 @@ class _Module(nn.Module):
 #         if attn_history is not None:
 #             _t, __bs, _n = attn_history.size()
 #             assert (__bs, _n) == (_bs, n)
-# 
+#
 #         h_t = self.linear(h_t).unsqueeze(1)
 #         h = h.view(n, bs, dim)
-# 
+#
 #         # e_t = [bs, 1, dim] bmm [bs, dim, n] = [bs, n] (after squeeze)
 #         e_t = h_t.bmm(h.transpose(0, 1).transpose(1, 2)).squeeze(1)
-# 
+#
 #         next_attn_history = None
 #         alpha = None
 #         if self.temporal:
@@ -363,12 +363,12 @@ class _Module(nn.Module):
 #                 e_t = (e_t - m).exp() / (attn_history - m).exp().sum(0)
 #                 s_t = e.sum(1)
 #                 alpha = e_t / s_t.unsqueeze(1)
-# 
+#
 #         if alpha is None:
 #             alpha = self.softmax(e_t)
-# 
+#
 #         c_t = alpha.unsqueeze(1).bmm(h.transpose(0, 1)).squeeze(1)
-# 
+#
 #         if self.temporal:
 #             return c_t, alpha, next_attn_history
 #         return c_t, alpha
@@ -381,21 +381,21 @@ class _Module(nn.Module):
 #         self.embeddings = embeddings
 #         W_emb = embeddings.weight
 #         self.linear_copy = nn.Linear(self.input_size, 1)
-# 
+#
 #         n_emb, emb_dim = list(W_emb.size())
-# 
+#
 #         # (2.4) Sharing decoder weights
 #         self.emb_proj = nn.Linear(emb_dim, self.input_size, bias=False)
 #         self.b_out = nn.Parameter(torch.Tensor(n_emb, 1))
 #         self.tanh = nn.Tanh()
 #         self._W_out = None
-# 
+#
 #         # refresh W_out matrix after each backward pass
 #         self.register_backward_hook(self.refresh_W_out)
-# 
+#
 #     def refresh_W_out(self, *args, **kwargs):
 #         self.W_out(True)
-# 
+#
 #     def W_out(self, refresh=False):
 #         """ Sect. (2.4) Sharing decoder weights
 #             The function returns the W_out matrix which is a projection of the
@@ -403,7 +403,7 @@ class _Module(nn.Module):
 #             The W_out matrix needs to recalculated after each backward pass,
 #             which is done automatically. This is done to avoid calculating it
 #             at each decoding step (which usually leads to OOM)
-# 
+#
 #             Returns:
 #                 W_out (FloaTensor): [n_emb, 3*dim]
 #         """
@@ -411,7 +411,7 @@ class _Module(nn.Module):
 #             _ = self.emb_proj(self.embeddings.weight)
 #             self._W_out = self.tanh(_)
 #         return self._W_out
-# 
+#
 #     def linear(self, V):
 #         """Calculate the output projection of `v` as in eq. (9)
 #             Args:
@@ -422,7 +422,7 @@ class _Module(nn.Module):
 #         W = self.W_out()
 #         logits = (W.matmul(V.t()) + self.b_out).t()
 #         return logits
-# 
+#
 
 class ReinforcedDecoder(_Module):
     def __init__(self, opt, embeddings, dec_attn=True,
@@ -451,11 +451,11 @@ class ReinforcedDecoder(_Module):
         self.rnn = onmt.modules.StackedLSTM(1, self.input_size,
                                             self.dim, opt.dropout)
 
-        self.enc_attn = IntraAttention(opt, self.dim, temporal=True)
+        self.enc_attn = IntraAttention(self.dim, temporal=True)
 
         self.dec_attn = None
         if dec_attn:
-            self.dec_attn = IntraAttention(opt, self.dim)
+            self.dec_attn = IntraAttention(self.dim)
 
         self.pad_id = embeddings.word_padding_idx
         self.exp_bias_reduction = exp_bias_reduction
@@ -685,23 +685,23 @@ class ReinforcedModel(onmt.Models.NMTModel):
 # class DummyGenerator:
 #     """Hacky way to ensure compatibility
 #     """
-# 
+#
 #     def dummy_pass(self, *args, **kwargs):
 #         pass
-# 
+#
 #     def __init__(self, *args, **kwargs):
 #         self.state_dict = self.dummy_pass
 #         self.cpu = self.dummy_pass
 #         self.cuda = self.dummy_pass
 #         self.__call__ = self.dummy_pass
 #         self.load_state_dict = self.dummy_pass
-# 
+#
 #     def __getattr__(self, attr):
 #         class DummyCallableObject:
 #             def __init__(self, *args, **kwargs):
 #                 pass
-# 
+#
 #             def __call__(self, *args, **kwargs):
 #                 pass
-# 
+#
 #         return DummyCallableObject()

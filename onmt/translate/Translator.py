@@ -67,7 +67,6 @@ class Translator(object):
                  fields,
                  beam_size,
                  n_best=1,
->>>>>>> master
                  max_length=100,
                  global_scorer=None,
                  copy_attn=False,

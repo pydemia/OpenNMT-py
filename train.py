@@ -215,7 +215,7 @@ def make_loss_compute(model, tgt_vocab, opt, train=True):
     own *LossCompute class, by subclassing LossComputeBase.
     """
     if opt.reinforced:
-        compute = onmt.Reinforced.EachStepGeneratorLossCompute(
+        compute = onmt.modules.EachStepGeneratorLossCompute(
             model.generator, tgt_vocab, opt.copy_attn_force)
     elif opt.copy_attn:
         compute = onmt.modules.CopyGeneratorLossCompute(
@@ -248,8 +248,8 @@ def train_model(model, fields, optim, data_type, model_opt):
     #                                        valid_loss, optim, trunc_size)
     # else:
     trainer = onmt.Trainer(model, train_loss, valid_loss, optim,
-                               trunc_size, shard_size, data_type,
-                               norm_method, grad_accum_count)
+                           trunc_size, shard_size, data_type,
+                           norm_method, grad_accum_count)
 
     print('\nStart training...')
     print(' * number of epochs: %d, starting from Epoch %d' %
