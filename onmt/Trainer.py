@@ -316,6 +316,7 @@ class Trainer(object):
                                                               batch,
                                                               self.train_loss,
                                                               dec_state)
+                    loss.backward()
                 else:
                     outputs, attns, dec_state = \
                         self.model(src, tgt, src_lengths, dec_state)
