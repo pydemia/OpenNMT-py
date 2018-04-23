@@ -24,9 +24,12 @@ class RougeScorer:
         scores = self.rouge.get_scores(hyps, refs)
         # NOTE: here we use score = r1 * r2 * rl
         #       I'm not sure how relevant it is
-        single_scores = [_['rouge-1']['f']*_['rouge-2']['f']*_['rouge-l']['f']
-                         for _ in scores]
-        return single_scores
+        metric_weight = {"rouge-1": 0, "rouge-2": 0, "rouge-l": 1}
+
+        scores = [sum([seq[metric]['f'] * metric_weight[metric] 
+                         for metric in seq.keys()])
+                    for seq in scores]
+        return scores
 
     def score(self, sample_pred, greedy_pred, tgt):
         """
