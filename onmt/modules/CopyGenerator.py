@@ -302,15 +302,11 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             output,
             copy_attn,
             batch.src_map)
-        # nonan(scores, "compute_loss.scores")
 
-        # Experimental:
-        # fast copy collapse:
-        # Dataset.collapse_copy_scores is very usefull in order
-        # to sum copy scores for tokens that are in vocabulary
-        # but using dataset.collapse_copy_scores at each step is
-        # inefficient.
-        # We do the same only using tensor operations
+
+        # FAST COPY SCORES COLLAPSE
+        # We collapse scores using only tensor operations for performance
+        # This is critical since it will be executed at each decoding steps
         _src_map = batch.src_map.float().data.cuda()
         _scores = scores.data.clone()
 
@@ -335,6 +331,7 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
                                              .squeeze()
 
         # [bs x src_len], invoc src tokens, or 1 (=pad)
+        # NOTE: we assume that 1 is the pad token
         src_token_invoc = _src.clone().masked_fill_(1-src_invoc_mask.byte(), 1)
 
         src_token_invoc = src_token_invoc.view(bs, -1)
@@ -343,23 +340,22 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
         _scores.scatter_add_(
             1, src_token_invoc.long(), src_copy_scores)
 
-        _scores[:, offset:] *= (1-cvoc_invoc_mask.float())
+        _scores[:, offset:] *= (1 - cvoc_invoc_mask.float())
         _scores[:, 1] = 0
 
-        _scores_data = _scores
-        scores_data = _scores_data
-        #
+        _collapsed_scores = _scores
+        collapsed_scores = _collapsed_scores
+        
         # CRITERION & PREDICTION: Predicting & Calculating the loss
-        #
         if prediction_type == "greedy":
-            _, pred = scores_data.max(1)
+            _, pred = collapsed_scores.max(1)
             pred = torch.autograd.Variable(pred)
             loss = self.criterion(scores, align, target).sum()
             loss_data = loss.data.clone()
 
         elif prediction_type == "sample":
             d = torch.distributions.Categorical(
-                scores_data[:, :len(self.tgt_vocab)])
+                collapsed_scores[:, :len(self.tgt_vocab)])
             # TODO check if this hack is mandatory
             # in this context target=1 if continue generation, 0 else:
             # kinda hacky but seems to work
@@ -370,17 +366,15 @@ class EachStepGeneratorLossCompute(CopyGeneratorLossCompute):
             loss_data = loss.sum().data
         else:
             raise ValueError("Incorrect prediction_type %s" % prediction_type)
-        # nonan(loss, "loss")
-        # nonan(pred, "pred")
-        pred.cuda()
+        
+        if output.is_cuda():
+            pred.cuda()
 
-        #
-        # FIXING TARGET
-        #
-        target_data = target.data.clone()
-        correct_mask = target_data.eq(0) * align.data.ne(0)
+        # FIXING TARGET TO TAKE COPY INTO ACCOUNT
+        correct_target = target.data.clone()
+        correct_mask = correct_target.eq(0) * align.data.ne(0)
         correct_copy = (align.data + len(self.tgt_vocab)) * correct_mask.long()
-        target_data = target_data + correct_copy
+        correct_target = correct_target + correct_copy
 
-        stats = self._stats(loss_data, scores_data, target_data)
+        stats = self._stats(loss_data, collapsed_scores, correct_target)
         return loss, pred, stats
