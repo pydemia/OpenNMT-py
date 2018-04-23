@@ -625,7 +625,7 @@ class ReinforcedDecoder(_Module):
 
 
 class ReinforcedModel(onmt.Models.NMTModel):
-    def __init__(self, encoder, decoder, multigpu=False, gamma=0.9984):
+    def __init__(self, encoder, decoder, gamma=0.9984):
         """
         Args:
             encoder:
@@ -658,30 +658,32 @@ class ReinforcedModel(onmt.Models.NMTModel):
                                                     context=enc_out)
         state = enc_state if dec_state is None else dec_state
 
-        loss, stats, hidden, _, _, preds = self.decoder(tgt[:-1],
-                                                        src,
-                                                        enc_out,
-                                                        state, batch,
-                                                        loss_compute,
-                                                        tgt=tgt[1:])
+        ml_loss, stats, hidden, _, _, ml_preds = self.decoder(tgt[:-1],
+                                                              src,
+                                                              enc_out,
+                                                              state,
+                                                              batch,
+                                                              loss_compute,
+                                                              tgt=tgt[1:])
 
         if self.gamma > 0:
-            loss2, stats2, hidden2, _, _, preds2 = self.decoder(tgt[:-1],
-                                                                src,
-                                                                enc_out,
-                                                                state,
-                                                                batch,
-                                                                loss_compute,
-                                                                tgt=tgt[1:],
-                                                                sampling=True)
+            rl_loss, stats2, hidden2, _, _, rl_preds = \
+                self.decoder(tgt[:-1],
+                             src,
+                             enc_out,
+                             state,
+                             batch,
+                             loss_compute,
+                             tgt=tgt[1:],
+                             sampling=True)
 
-            sample_preds = torch.stack(preds2, 1)
-            greedy_preds = torch.stack(preds, 1)
+            sample_preds = torch.stack(rl_preds, 1)
+            greedy_preds = torch.stack(ml_preds, 1)
             metric = self.rouge.score(sample_preds, greedy_preds, tgt[1:].t())
             metric = torch.autograd.Variable(metric).cuda()
-            rl_loss = (loss2 * metric).sum()
 
-            loss = (self.gamma * rl_loss) - ((1 - self.gamma * loss))
+            rl_loss = (rl_loss * metric).sum()
+            loss = (self.gamma * rl_loss) - ((1 - self.gamma * ml_loss))
         return loss, stats, state
 
 # TODO TODEL
