@@ -5,7 +5,6 @@ import math
 
 from onmt.modules import Elementwise
 from onmt.Utils import aeq
-from onmt.io.DatasetBase import UNK
 
 
 class PositionalEncoding(nn.Module):
@@ -245,8 +244,6 @@ class PartialEmbedding(nn.Module):
         Raise:
             AssertionError if nfeat != 1
         """
-        # _input = input.clone()
-        # _input[_input >= self.partial_num_embeddings] = UNK       
         _input = input
         emb = self.full_embedding.forward(_input)
         return emb
