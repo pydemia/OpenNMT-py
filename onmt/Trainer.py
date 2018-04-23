@@ -311,12 +311,13 @@ class Trainer(object):
                 if self.grad_accum_count == 1:
                     self.model.zero_grad()
                 if type(self.model) == onmt.Reinforced.ReinforcedModel:
+                    batch.alignment = batch.alignment[j + 1: j + trunc_size]
                     loss, batch_stats, dec_state = self.model(src, tgt,
                                                               src_lengths,
                                                               batch,
                                                               self.train_loss,
                                                               dec_state)
-                    loss.backward()
+                    loss.div(normalization).backward()
                 else:
                     outputs, attns, dec_state = \
                         self.model(src, tgt, src_lengths, dec_state)
