@@ -9,15 +9,13 @@ things to users(i.e. how to do it). Also see train.py(one of the
 users of this library) for the strategy things we do.
 """
 from __future__ import division
-import time
-import sys
-import math
+from __future__ import print_function
+
 import torch
 import torch.nn as nn
 
-import onmt
 import onmt.inputters as inputters
-
+import onmt.utils
 
 def build_trainer(opt, model, fields, optim, data_type, model_saver=None):
     """
@@ -33,6 +31,7 @@ def build_trainer(opt, model, fields, optim, data_type, model_saver=None):
         model_saver(:obj:`onmt.models.ModelSaverBase`): the utility object
             used to save the model (after each epoch)
     """
+
     train_loss = onmt.utils.loss.build_loss_compute(
         model, fields["tgt"].vocab, opt)
     valid_loss = onmt.utils.loss.build_loss_compute(
@@ -366,5 +365,3 @@ class Trainer(object):
         Drop a checkpoint (i.e. save the model) if a model saver is set
         see `onmt.models.ModelSaverBase.maybe_save` for doc
         """
-        if self.model_saver is not None:
-            self.model_saver.maybe_save(*args, **kwargs)
